@@ -56,11 +56,8 @@ def rodar_uma_vez() -> dict:
         c_cn, c_sub = _etapa("contratos_comprasnet", comprasnet_contratos.coletar_contratos_e_subrotas)
         contadores["contratos_comprasnet"] = c_cn
         contadores["contratos_comprasnet_subrotas"] = c_sub
-        arp, ai, ae, ad = _etapa("arp", dados_abertos.coletar_arp_e_dependentes)
-        contadores["arp"] = arp
-        contadores["arp_itens"] = ai
-        contadores["arp_empenhos"] = ae
-        contadores["arp_adesoes"] = ad
+        arp_contadores = _etapa("arp", dados_abertos.coletar_arp_e_dependentes)
+        contadores.update(arp_contadores)
 
         db.finalizar_execucao(exec_id, "ok", contadores)
         log.info("execucao OK: %s", contadores)

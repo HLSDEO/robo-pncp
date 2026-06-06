@@ -15,6 +15,14 @@ HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "60"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 WORKERS = int(os.getenv("WORKERS", "4"))
 
+# ----- Dados Abertos Comprasgov -----
+# tamanhoPagina aceito pela API: 10..500
+DA_PAGE_SIZE = int(os.getenv("DA_PAGE_SIZE", "500"))
+# Coletar o catalogo completo de itens de material (~342k). Desligue se nao precisar.
+DA_MATERIAL_ITENS = os.getenv("DA_MATERIAL_ITENS", "true").lower() not in {"0", "false", "no"}
+# Ano inicial para varrer ARPs (janelas de 365 dias ate hoje+1ano).
+ARP_ANO_INICIAL = int(os.getenv("ARP_ANO_INICIAL", "2023"))
+
 PNCP_BASE = "https://pncp.gov.br"
 COMPRASNET_CONTRATOS_BASE = "https://contratos.comprasnet.gov.br/api"
 DADOSABERTOS_BASE = "https://dadosabertos.compras.gov.br"

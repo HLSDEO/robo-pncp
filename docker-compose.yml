@@ -1,19 +1,19 @@
 services:
-  postgres:
+  pncp-db:
     image: postgres:16-alpine
     container_name: robo-pncp-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-pncp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pncp}
-      POSTGRES_DB: ${POSTGRES_DB:-pncp}
+      POSTGRES_USER: pncp
+      POSTGRES_PASSWORD: pncp
+      POSTGRES_DB: pncp
     # ports:
     #   - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pncp} -d ${POSTGRES_DB:-pncp}"]
+      test: ["CMD-SHELL", "pg_isready -U pncp -d pncp"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -25,20 +25,23 @@ services:
     container_name: robo-pncp-collector
     restart: unless-stopped
     depends_on:
-      postgres:
+      pncp-db:
         condition: service_healthy
     environment:
-      DB_HOST: postgres
+      DB_HOST: pncp-db
       DB_PORT: 5432
-      DB_USER: ${POSTGRES_USER:-pncp}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-pncp}
-      DB_NAME: ${POSTGRES_DB:-pncp}
+      DB_USER: pncp
+      DB_PASSWORD: pncp
+      DB_NAME: pncp
       RUN_MODE: ${RUN_MODE:-loop}
       LOOP_INTERVAL_SECONDS: ${LOOP_INTERVAL_SECONDS:-21600}
       PAGE_SIZE: ${PAGE_SIZE:-50}
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-60}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WORKERS: ${WORKERS:-4}
+      DA_PAGE_SIZE: ${DA_PAGE_SIZE:-500}
+      DA_MATERIAL_ITENS: ${DA_MATERIAL_ITENS:-true}
+      ARP_ANO_INICIAL: ${ARP_ANO_INICIAL:-2023}
       # ----- Observabilidade -----
       OBS_ENABLED: ${OBS_ENABLED:-true}
       OBS_URL: ${OBS_URL:-http://backend:8000/api/logs}

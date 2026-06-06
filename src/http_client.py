@@ -50,9 +50,9 @@ def _api_tag(url: str) -> str:
     if "dadosabertos.compras.gov.br" in url:
         if "modulo-material" in url:
             return "DADOSABERTOS_MATERIAL"
-        if "modulo-servicos" in url:
+        if "modulo-servico" in url:
             return "DADOSABERTOS_SERVICO"
-        if "modulo-contratacoes" in url:
+        if "modulo-arp" in url:
             return "DADOSABERTOS_ARP"
         return "DADOSABERTOS"
     return "HTTP"

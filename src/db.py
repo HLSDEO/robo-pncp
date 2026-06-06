@@ -1,0 +1,123 @@
+import json
+import logging
+from contextlib import contextmanager
+import psycopg
+from psycopg.types.json import Jsonb
+
+from .config import DB, UNIDADES_PF
+
+log = logging.getLogger(__name__)
+
+_pool_conn: psycopg.Connection | None = None
+
+
+def connect() -> psycopg.Connection:
+    global _pool_conn
+    if _pool_conn is None or _pool_conn.closed:
+        _pool_conn = psycopg.connect(**DB, autocommit=False)
+    return _pool_conn
+
+
+@contextmanager
+def cursor():
+    conn = connect()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def seed_unidades():
+    with cursor() as cur:
+        for sigla, codigo in UNIDADES_PF.items():
+            cur.execute(
+                """
+                INSERT INTO meta.unidades_pf (sigla, codigo_unidade)
+                VALUES (%s, %s)
+                ON CONFLICT (sigla) DO UPDATE SET codigo_unidade = EXCLUDED.codigo_unidade
+                """,
+                (sigla, codigo),
+            )
+
+
+def iniciar_execucao() -> int:
+    with cursor() as cur:
+        cur.execute(
+            "INSERT INTO meta.execucao (status) VALUES ('rodando') RETURNING id"
+        )
+        return cur.fetchone()[0]
+
+
+def finalizar_execucao(exec_id: int, status: str, contadores: dict, erro: str | None = None):
+    with cursor() as cur:
+        cur.execute(
+            """
+            UPDATE meta.execucao
+               SET finalizado_em = now(),
+                   status = %s,
+                   contadores = %s,
+                   erro = %s
+             WHERE id = %s
+            """,
+            (status, Jsonb(contadores), erro, exec_id),
+        )
+
+
+def upsert(table: str, pk_cols: list[str], row: dict):
+    """Upsert generico. row deve conter 'raw_json' como dict (sera convertido para Jsonb)."""
+    cols = list(row.keys())
+    placeholders = ", ".join(["%s"] * len(cols))
+    col_list = ", ".join(cols)
+    updates = ", ".join(
+        f"{c} = EXCLUDED.{c}" for c in cols if c not in pk_cols
+    )
+    pk_list = ", ".join(pk_cols)
+    on_conflict = (
+        f"ON CONFLICT ({pk_list}) DO UPDATE SET {updates}"
+        if updates
+        else f"ON CONFLICT ({pk_list}) DO NOTHING"
+    )
+    sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) {on_conflict}"
+    values = []
+    for c in cols:
+        v = row[c]
+        if c == "raw_json" or (isinstance(v, (dict, list)) and c != "raw_json"):
+            values.append(Jsonb(v))
+        else:
+            values.append(v)
+    with cursor() as cur:
+        cur.execute(sql, values)
+
+
+def listar_editais_para_drilldown() -> list[tuple[str, str, str, str]]:
+    """Retorna (orgao_cnpj, ano, numero_sequencial, numero_controle_pncp) de todos os editais."""
+    with cursor() as cur:
+        cur.execute(
+            """
+            SELECT orgao_cnpj, ano, numero_sequencial, numero_controle_pncp
+              FROM pncp.editais
+             WHERE orgao_cnpj IS NOT NULL AND ano IS NOT NULL AND numero_sequencial IS NOT NULL
+            """
+        )
+        return cur.fetchall()
+
+
+def listar_itens_com_resultado() -> list[tuple[str, str, str, int]]:
+    with cursor() as cur:
+        cur.execute(
+            """
+            SELECT orgao_cnpj, ano, numero_sequencial, numero_item
+              FROM pncp.edital_itens
+             WHERE tem_resultado IS TRUE
+            """
+        )
+        return cur.fetchall()
+
+
+def listar_contratos_para_drilldown() -> list[tuple[int]]:
+    with cursor() as cur:
+        cur.execute("SELECT id FROM comprasnet.contratos")
+        return [r[0] for r in cur.fetchall()]

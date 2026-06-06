@@ -34,30 +34,30 @@ def rodar_uma_vez() -> dict:
     try:
         db.seed_unidades()
 
-        log.info(">>> 1/6 hierarquia material")
-        contadores["material"] = _etapa("hierarquia_material", dados_abertos.coletar_hierarquia_material)
-
-        log.info(">>> 2/6 hierarquia servico")
-        contadores["servico"] = _etapa("hierarquia_servico", dados_abertos.coletar_hierarquia_servico)
-
-        log.info(">>> 3/6 editais PNCP")
+        log.info(">>> 1/6 editais PNCP")
         contadores["editais"] = _etapa("editais", pncp.coletar_editais)
 
-        log.info(">>> 4/6 itens e resultados PNCP")
+        log.info(">>> 2/6 itens e resultados PNCP")
         itens, resultados = _etapa("itens_resultados", pncp.coletar_itens_e_resultados)
         contadores["edital_itens"] = itens
         contadores["edital_item_resultados"] = resultados
 
-        log.info(">>> 5/6 atas e contratos PNCP")
+        log.info(">>> 3/6 atas e contratos PNCP")
         contadores["atas"] = _etapa("atas", pncp.coletar_atas)
         contadores["contratos_pncp"] = _etapa("contratos_pncp", pncp.coletar_contratos)
 
-        log.info(">>> 6/6 contratos comprasnet + ARP dados abertos")
+        log.info(">>> 4/6 contratos comprasnet")
         c_cn, c_sub = _etapa("contratos_comprasnet", comprasnet_contratos.coletar_contratos_e_subrotas)
         contadores["contratos_comprasnet"] = c_cn
         contadores["contratos_comprasnet_subrotas"] = c_sub
+
+        log.info(">>> 5/6 ARP dados abertos")
         arp_contadores = _etapa("arp", dados_abertos.coletar_arp_e_dependentes)
         contadores.update(arp_contadores)
+
+        log.info(">>> 6/6 hierarquia material/servico (itens coletados)")
+        hier_contadores = _etapa("hierarquia_itens", dados_abertos.coletar_hierarquia_itens)
+        contadores.update(hier_contadores)
 
         db.finalizar_execucao(exec_id, "ok", contadores)
         log.info("execucao OK: %s", contadores)

@@ -19,8 +19,8 @@ procedência do dado nunca se perca. Cada endpoint vai para sua própria tabela
 | PNCP — contratos do edital             | `/api/pncp/v1/orgaos/{cnpj}/contratos/contratacao/{ano}/{seq}/`                                            | `pncp.contratos`                             |
 | Contratos Comprasnet — contrato base   | `contratos.comprasnet.gov.br/api/contrato/ugorigem/{UG}/numeroano/{NUMEROANO}`                            | `comprasnet.contratos`                       |
 | Contratos Comprasnet — sub-rotas       | `/api/contrato/{id}/{historico,empenhos,cronograma,garantias,itens,prepostos,responsaveis,...}`           | `comprasnet.contrato_subrota`                |
-| Dados Abertos — hierarquia material    | `/modulo-material/{1_consultarGrupoMaterial,2_consultarClasseMaterial,3_consultarPdmMaterial,4_consultarItemMaterial}` | `dadosabertos.material_grupo`, `material_classe`, `material_pdm`, `material_item` |
-| Dados Abertos — hierarquia serviço     | `/modulo-servico/{1_consultarSecaoServico,2_consultarDivisaoServico,3_consultarGrupoServico,4_consultarClasseServico,5_consultarSubClasseServico,6_consultarItemServico}` | `dadosabertos.servico_secao`, `servico_divisao`, `servico_grupo`, `servico_classe`, `servico_subclasse`, `servico_item` |
+| Dados Abertos — hierarquia material    | `/modulo-material/4_consultarItemMaterial?codigoItem={cod}` (cadeia Grupo>Classe>PDM>Item embutida) | `dadosabertos.material_grupo`, `material_classe`, `material_pdm`, `material_item` |
+| Dados Abertos — hierarquia serviço     | `/modulo-servico/6_consultarItemServico?codigoServico={cod}` (cadeia Seção>…>Item embutida) | `dadosabertos.servico_secao`, `servico_divisao`, `servico_grupo`, `servico_classe`, `servico_subclasse`, `servico_item` |
 | Dados Abertos — ARP                     | `/modulo-arp/1_consultarARP` (filtro por `codigoUnidadeGerenciadora` + janela `dataVigenciaInicial` ≤365d) | `dadosabertos.arp`                           |
 | Dados Abertos — itens da ARP           | `/modulo-arp/2_consultarARPItem`                                                                          | `dadosabertos.arp_itens`                     |
 | Dados Abertos — unidades do item       | `/modulo-arp/3_consultarUnidadesItem`                                                                     | `dadosabertos.arp_item_unidades`             |
@@ -32,10 +32,15 @@ procedência do dado nunca se perca. Cada endpoint vai para sua própria tabela
 > `tamanhoPagina` aceito: 10–500. Constantes no topo de
 > [`src/collectors/dados_abertos.py`](src/collectors/dados_abertos.py).
 >
-> A hierarquia de material/serviço é **dado de referência global** (não filtra por
-> PF). As ARPs são varridas por **unidade gestora da PF** (códigos em `UNIDADES_PF`)
-> em janelas de 365 dias a partir de `ARP_ANO_INICIAL`. O catálogo de itens de
-> material (~342k) pode ser desligado com `DA_MATERIAL_ITENS=false`.
+> **Hierarquia sob demanda:** em vez de baixar o catálogo inteiro (~342k materiais),
+> o robô coleta a hierarquia **apenas dos itens que apareceram** nos editais
+> (`pncp.edital_itens.catalogoCodigoItem`) e nas atas (`dadosabertos.arp_itens.codigo_item`).
+> Para cada código, uma chamada ao endpoint de item devolve a cadeia completa
+> (grupo→classe→pdm→item / seção→…→item), que é gravada em todos os níveis.
+> Por isso essa é a **última etapa** do pipeline (precisa dos itens já coletados).
+>
+> As ARPs são varridas por **unidade gestora da PF** (códigos em `UNIDADES_PF`)
+> em janelas de 365 dias a partir de `ARP_ANO_INICIAL`.
 
 ## Unidades cobertas
 
@@ -51,11 +56,12 @@ usando `ThreadPoolExecutor`:
 - `coletar_itens_e_resultados` — `WORKERS` editais (e depois itens com resultado) simultaneamente.
 - `coletar_atas` / `coletar_contratos` — `WORKERS` editais simultaneamente.
 - Comprasnet (`coletar_contratos_e_subrotas`) — `WORKERS` contratos simultaneamente.
-- Hierarquia material/serviço — os níveis (grupo/classe/pdm/item…) coletados em paralelo.
 - Dados Abertos ARP — `WORKERS` pares (unidade PF × janela), depois empenhos/unidades/adesões por item.
+- Hierarquia sob demanda — `WORKERS` códigos de material/serviço resolvidos em paralelo.
 
 A ordem **entre etapas** continua sequencial (editais → drill-downs → contratos →
-ARP) — só paralelizamos dentro de cada etapa.
+ARP → hierarquia) — só paralelizamos dentro de cada etapa. A hierarquia vem por
+último porque depende dos códigos de catálogo já coletados.
 
 Thread-safety:
 - Pool de conexões PG via `psycopg_pool.ConnectionPool` (`min=1`, `max=WORKERS+2`).
@@ -102,7 +108,6 @@ init.
 | `LOG_LEVEL`             | `INFO`  | `DEBUG`, `INFO`, `WARNING`, `ERROR`             |
 | `WORKERS`               | `4`     | Threads concorrentes. Pool PG = `WORKERS + 2`.   |
 | `DA_PAGE_SIZE`          | `500`   | `tamanhoPagina` do Dados Abertos (10–500).       |
-| `DA_MATERIAL_ITENS`     | `true`  | Coletar catálogo de itens de material (~342k).   |
 | `ARP_ANO_INICIAL`       | `2023`  | Ano inicial da varredura de ARPs.                |
 
 ## Observabilidade

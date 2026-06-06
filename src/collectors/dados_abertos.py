@@ -3,7 +3,7 @@
 Paths confirmados via /v3/api-docs (swagger). Envelope de resposta:
     {resultado:[...], totalRegistros, totalPaginas, paginasRestantes}
 
-Hierarquias:
+Hierarquias (coletadas SOB DEMANDA - so para os itens vistos nos editais/atas):
   Material: Grupo > Classe > PDM > Item
   Servico : Secao > Divisao > Grupo > Classe > SubClasse > Item
 
@@ -20,7 +20,6 @@ from datetime import date, timedelta
 from ..config import (
     DADOSABERTOS_BASE,
     DA_PAGE_SIZE,
-    DA_MATERIAL_ITENS,
     ARP_ANO_INICIAL,
     UNIDADES_PF,
 )
@@ -32,17 +31,9 @@ log = logging.getLogger(__name__)
 
 # -------- endpoints --------
 MAT = f"{DADOSABERTOS_BASE}/modulo-material"
-MAT_GRUPO = f"{MAT}/1_consultarGrupoMaterial"
-MAT_CLASSE = f"{MAT}/2_consultarClasseMaterial"
-MAT_PDM = f"{MAT}/3_consultarPdmMaterial"
 MAT_ITEM = f"{MAT}/4_consultarItemMaterial"
 
 SVC = f"{DADOSABERTOS_BASE}/modulo-servico"
-SVC_SECAO = f"{SVC}/1_consultarSecaoServico"
-SVC_DIVISAO = f"{SVC}/2_consultarDivisaoServico"
-SVC_GRUPO = f"{SVC}/3_consultarGrupoServico"
-SVC_CLASSE = f"{SVC}/4_consultarClasseServico"
-SVC_SUBCLASSE = f"{SVC}/5_consultarSubClasseServico"
 SVC_ITEM = f"{SVC}/6_consultarItemServico"
 
 ARP = f"{DADOSABERTOS_BASE}/modulo-arp"
@@ -71,10 +62,7 @@ def _paginar(url: str, extra: dict | None = None):
             return
         if not data:
             return
-        if isinstance(data, list):
-            items = data
-        else:
-            items = data.get("resultado") or []
+        items = data if isinstance(data, list) else (data.get("resultado") or [])
         if not items:
             return
         for it in items:
@@ -126,262 +114,224 @@ def _janelas(ano_inicial: int) -> list[tuple[str, str]]:
 
 
 # =====================================================================
-# Hierarquia de Material
+# Hierarquia SOB DEMANDA - so dos itens coletados (editais + ARPs)
 # =====================================================================
 
-def _mat_grupo() -> int:
-    n = 0
-    for g in _paginar(MAT_GRUPO):
-        cod = g.get("codigoGrupo")
-        if cod is None:
-            continue
+def coletar_hierarquia_itens() -> dict:
+    """Resolve a hierarquia (material/servico) apenas dos codigos de catalogo
+    que apareceram nos itens coletados (edital_itens + arp_itens)."""
+    materiais, servicos = _codigos_coletados()
+    log.info("hierarquia sob demanda: %d materiais, %d servicos", len(materiais), len(servicos))
+    tm = map_workers(_lookup_material, sorted(materiais), desc="hier_mat", reducer=sum_int)
+    ts = map_workers(_lookup_servico, sorted(servicos), desc="hier_svc", reducer=sum_int)
+    contadores = {"hierarquia_material": tm, "hierarquia_servico": ts}
+    log.info("hierarquia itens %s", contadores)
+    return contadores
+
+
+def _codigos_coletados() -> tuple[set[str], set[str]]:
+    """Codigos de catalogo (CATMAT/CATSER) vistos nos itens coletados.
+    Fontes: pncp.edital_itens.catalogoCodigoItem (+ material_ou_servico)
+            dadosabertos.arp_itens.codigo_item (+ tipo_item)
+    """
+    with cursor() as cur:
+        cur.execute(
+            """
+            SELECT cod, ms FROM (
+                SELECT DISTINCT raw_json->>'catalogoCodigoItem' AS cod,
+                       upper(left(coalesce(material_ou_servico,''),1)) AS ms
+                  FROM pncp.edital_itens
+                 WHERE raw_json->>'catalogoCodigoItem' IS NOT NULL
+                UNION
+                SELECT DISTINCT codigo_item AS cod,
+                       CASE WHEN tipo_item ILIKE 'mat%' THEN 'M'
+                            WHEN tipo_item ILIKE 'ser%' THEN 'S' END AS ms
+                  FROM dadosabertos.arp_itens
+                 WHERE codigo_item IS NOT NULL
+            ) t
+            WHERE cod IS NOT NULL AND cod <> ''
+            """
+        )
+        rows = cur.fetchall()
+    materiais = {c for c, ms in rows if ms == "M"}
+    servicos = {c for c, ms in rows if ms == "S"}
+    # codigos sem tipo definido: tenta nos dois (a API simplesmente nao acha em um)
+    indefinidos = {c for c, ms in rows if ms not in ("M", "S")}
+    materiais |= indefinidos
+    servicos |= indefinidos
+    return materiais, servicos
+
+
+def _lookup_material(codigo: str) -> int:
+    got = 0
+    for i in _paginar(MAT_ITEM, {"codigoItem": codigo}):
+        _upsert_material_chain(i)
+        got = 1
+    return got
+
+
+def _upsert_material_chain(i: dict) -> None:
+    g = i.get("codigoGrupo")
+    if g is not None:
         upsert("dadosabertos.material_grupo", ["codigo_grupo"], {
-            "codigo_grupo": _s(cod),
-            "nome_grupo": g.get("nomeGrupo"),
-            "status_grupo": g.get("statusGrupo"),
-            "data_atualizacao": g.get("dataHoraAtualizacao"),
+            "codigo_grupo": _s(g),
+            "nome_grupo": i.get("nomeGrupo"),
+            "status_grupo": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_material_grupo",
-            "fonte_url": MAT_GRUPO,
-            "raw_json": g,
+            "fonte_url": MAT_ITEM,
+            "raw_json": {"codigoGrupo": g, "nomeGrupo": i.get("nomeGrupo")},
         })
-        n += 1
-    return n
-
-
-def _mat_classe() -> int:
-    n = 0
-    for c in _paginar(MAT_CLASSE):
-        cod = c.get("codigoClasse")
-        if cod is None:
-            continue
+    c = i.get("codigoClasse")
+    if c is not None:
         upsert("dadosabertos.material_classe", ["codigo_classe"], {
-            "codigo_classe": _s(cod),
-            "codigo_grupo": _s(c.get("codigoGrupo")),
-            "nome_grupo": c.get("nomeGrupo"),
-            "nome_classe": c.get("nomeClasse"),
-            "status_classe": c.get("statusClasse", c.get("statusGrupo")),
-            "data_atualizacao": c.get("dataHoraAtualizacao"),
+            "codigo_classe": _s(c),
+            "codigo_grupo": _s(g),
+            "nome_grupo": i.get("nomeGrupo"),
+            "nome_classe": i.get("nomeClasse"),
+            "status_classe": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_material_classe",
-            "fonte_url": MAT_CLASSE,
-            "raw_json": c,
+            "fonte_url": MAT_ITEM,
+            "raw_json": {"codigoClasse": c, "nomeClasse": i.get("nomeClasse"),
+                         "codigoGrupo": g, "nomeGrupo": i.get("nomeGrupo")},
         })
-        n += 1
-    return n
-
-
-def _mat_pdm() -> int:
-    n = 0
-    for p in _paginar(MAT_PDM):
-        cod = p.get("codigoPdm")
-        if cod is None:
-            continue
+    p = i.get("codigoPdm")
+    if p is not None:
         upsert("dadosabertos.material_pdm", ["codigo_pdm"], {
-            "codigo_pdm": _s(cod),
-            "codigo_classe": _s(p.get("codigoClasse")),
-            "nome_classe": p.get("nomeClasse"),
-            "codigo_grupo": _s(p.get("codigoGrupo")),
-            "nome_grupo": p.get("nomeGrupo"),
-            "nome_pdm": p.get("nomePdm"),
-            "status_pdm": p.get("statusPdm"),
-            "data_atualizacao": p.get("dataHoraAtualizacao"),
+            "codigo_pdm": _s(p),
+            "codigo_classe": _s(c),
+            "nome_classe": i.get("nomeClasse"),
+            "codigo_grupo": _s(g),
+            "nome_grupo": i.get("nomeGrupo"),
+            "nome_pdm": i.get("nomePdm"),
+            "status_pdm": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_material_pdm",
-            "fonte_url": MAT_PDM,
-            "raw_json": p,
+            "fonte_url": MAT_ITEM,
+            "raw_json": {"codigoPdm": p, "nomePdm": i.get("nomePdm"),
+                         "codigoClasse": c, "codigoGrupo": g},
         })
-        n += 1
-    return n
-
-
-def _mat_item() -> int:
-    if not DA_MATERIAL_ITENS:
-        log.info("material_item desabilitado (DA_MATERIAL_ITENS=false)")
-        return 0
-    n = 0
-    for it in _paginar(MAT_ITEM):
-        cod = it.get("codigoItem")
-        if cod is None:
-            continue
+    cod = i.get("codigoItem")
+    if cod is not None:
         upsert("dadosabertos.material_item", ["codigo_item"], {
             "codigo_item": _s(cod),
-            "codigo_pdm": _s(it.get("codigoPdm")),
-            "nome_pdm": it.get("nomePdm"),
-            "codigo_classe": _s(it.get("codigoClasse")),
-            "nome_classe": it.get("nomeClasse"),
-            "codigo_grupo": _s(it.get("codigoGrupo")),
-            "nome_grupo": it.get("nomeGrupo"),
-            "descricao_item": it.get("descricaoItem"),
-            "status_item": it.get("statusItem"),
-            "item_sustentavel": it.get("itemSustentavel"),
-            "codigo_ncm": it.get("codigo_ncm"),
-            "descricao_ncm": it.get("descricao_ncm"),
+            "codigo_pdm": _s(p),
+            "nome_pdm": i.get("nomePdm"),
+            "codigo_classe": _s(c),
+            "nome_classe": i.get("nomeClasse"),
+            "codigo_grupo": _s(g),
+            "nome_grupo": i.get("nomeGrupo"),
+            "descricao_item": i.get("descricaoItem"),
+            "status_item": i.get("statusItem"),
+            "item_sustentavel": i.get("itemSustentavel"),
+            "codigo_ncm": i.get("codigo_ncm"),
+            "descricao_ncm": i.get("descricao_ncm"),
             "fonte": "dadosabertos_material_item",
             "fonte_url": MAT_ITEM,
-            "raw_json": it,
+            "raw_json": i,
         })
-        n += 1
-        if n % 5000 == 0:
-            log.info("material_item: %d coletados...", n)
-    return n
 
 
-def coletar_hierarquia_material() -> int:
-    total = map_workers(
-        lambda f: f(),
-        [_mat_grupo, _mat_classe, _mat_pdm, _mat_item],
-        desc="mat_hier",
-        reducer=sum_int,
-    )
-    log.info("hierarquia material=%d", total)
-    return total
+def _lookup_servico(codigo: str) -> int:
+    got = 0
+    for i in _paginar(SVC_ITEM, {"codigoServico": codigo}):
+        _upsert_servico_chain(i)
+        got = 1
+    return got
 
 
-# =====================================================================
-# Hierarquia de Servico
-# =====================================================================
-
-def _svc_secao() -> int:
-    n = 0
-    for s in _paginar(SVC_SECAO):
-        cod = s.get("codigoSecao")
-        if cod is None:
-            continue
+def _upsert_servico_chain(i: dict) -> None:
+    secao = i.get("codigoSecao")
+    if secao is not None:
         upsert("dadosabertos.servico_secao", ["codigo_secao"], {
-            "codigo_secao": _s(cod),
-            "nome_secao": s.get("nomeSecao"),
-            "status_secao": s.get("statusSecao"),
-            "data_atualizacao": s.get("dataHoraAtualizacao"),
+            "codigo_secao": _s(secao),
+            "nome_secao": i.get("nomeSecao"),
+            "status_secao": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_servico_secao",
-            "fonte_url": SVC_SECAO,
-            "raw_json": s,
+            "fonte_url": SVC_ITEM,
+            "raw_json": {"codigoSecao": secao, "nomeSecao": i.get("nomeSecao")},
         })
-        n += 1
-    return n
-
-
-def _svc_divisao() -> int:
-    n = 0
-    for d in _paginar(SVC_DIVISAO):
-        cod = d.get("codigoDivisao")
-        if cod is None:
-            continue
+    div = i.get("codigoDivisao")
+    if div is not None:
         upsert("dadosabertos.servico_divisao", ["codigo_divisao"], {
-            "codigo_divisao": _s(cod),
-            "codigo_secao": _s(d.get("codigoSecao")),
-            "nome_secao": d.get("nomeSecao"),
-            "nome_divisao": d.get("nomeDivisao"),
-            "status_divisao": d.get("statusDivisao"),
-            "data_atualizacao": d.get("dataHoraAtualizacao"),
+            "codigo_divisao": _s(div),
+            "codigo_secao": _s(secao),
+            "nome_secao": i.get("nomeSecao"),
+            "nome_divisao": i.get("nomeDivisao"),
+            "status_divisao": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_servico_divisao",
-            "fonte_url": SVC_DIVISAO,
-            "raw_json": d,
+            "fonte_url": SVC_ITEM,
+            "raw_json": {"codigoDivisao": div, "nomeDivisao": i.get("nomeDivisao"),
+                         "codigoSecao": secao},
         })
-        n += 1
-    return n
-
-
-def _svc_grupo() -> int:
-    n = 0
-    for g in _paginar(SVC_GRUPO):
-        cod = g.get("codigoGrupo")
-        if cod is None:
-            continue
+    g = i.get("codigoGrupo")
+    if g is not None:
         upsert("dadosabertos.servico_grupo", ["codigo_grupo"], {
-            "codigo_grupo": _s(cod),
-            "codigo_divisao": _s(g.get("codigoDivisao")),
-            "nome_divisao": g.get("nomeDivisao"),
-            "nome_secao": g.get("nomeSecao"),
-            "nome_grupo": g.get("nomeGrupo"),
-            "status_grupo": g.get("statusGrupo"),
-            "data_atualizacao": g.get("dataHoraAtualizacao"),
+            "codigo_grupo": _s(g),
+            "codigo_divisao": _s(div),
+            "nome_divisao": i.get("nomeDivisao"),
+            "nome_secao": i.get("nomeSecao"),
+            "nome_grupo": i.get("nomeGrupo"),
+            "status_grupo": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_servico_grupo",
-            "fonte_url": SVC_GRUPO,
-            "raw_json": g,
+            "fonte_url": SVC_ITEM,
+            "raw_json": {"codigoGrupo": g, "nomeGrupo": i.get("nomeGrupo"),
+                         "codigoDivisao": div},
         })
-        n += 1
-    return n
-
-
-def _svc_classe() -> int:
-    n = 0
-    for c in _paginar(SVC_CLASSE):
-        cod = c.get("codigoClasse")
-        if cod is None:
-            continue
+    c = i.get("codigoClasse")
+    if c is not None:
         upsert("dadosabertos.servico_classe", ["codigo_classe"], {
-            "codigo_classe": _s(cod),
-            "codigo_grupo": _s(c.get("codigoGrupo")),
-            "nome_grupo": c.get("nomeGrupo"),
-            "nome_classe": c.get("nomeClasse"),
-            "status_classe": c.get("statusClasse", c.get("statusGrupo")),
-            "data_atualizacao": c.get("dataHoraAtualizacao"),
+            "codigo_classe": _s(c),
+            "codigo_grupo": _s(g),
+            "nome_grupo": i.get("nomeGrupo"),
+            "nome_classe": i.get("nomeClasse"),
+            "status_classe": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_servico_classe",
-            "fonte_url": SVC_CLASSE,
-            "raw_json": c,
+            "fonte_url": SVC_ITEM,
+            "raw_json": {"codigoClasse": c, "nomeClasse": i.get("nomeClasse"),
+                         "codigoGrupo": g},
         })
-        n += 1
-    return n
-
-
-def _svc_subclasse() -> int:
-    n = 0
-    for sc in _paginar(SVC_SUBCLASSE):
-        cod = sc.get("codigoSubclasse")
-        if cod is None:
-            continue
+    sub = i.get("codigoSubclasse")
+    if sub is not None:
         upsert("dadosabertos.servico_subclasse", ["codigo_subclasse"], {
-            "codigo_subclasse": _s(cod),
-            "codigo_classe": _s(sc.get("codigoClasse")),
-            "nome_classe": sc.get("nomeClasse"),
-            "nome_subclasse": sc.get("nomeSubclasse"),
-            "status_subclasse": sc.get("statusSubclasse"),
-            "data_atualizacao": sc.get("dataHoraAtualizacao"),
+            "codigo_subclasse": _s(sub),
+            "codigo_classe": _s(c),
+            "nome_classe": i.get("nomeClasse"),
+            "nome_subclasse": i.get("nomeSubclasse"),
+            "status_subclasse": None,
+            "data_atualizacao": None,
             "fonte": "dadosabertos_servico_subclasse",
-            "fonte_url": SVC_SUBCLASSE,
-            "raw_json": sc,
+            "fonte_url": SVC_ITEM,
+            "raw_json": {"codigoSubclasse": sub, "nomeSubclasse": i.get("nomeSubclasse"),
+                         "codigoClasse": c},
         })
-        n += 1
-    return n
-
-
-def _svc_item() -> int:
-    n = 0
-    for it in _paginar(SVC_ITEM):
-        cod = it.get("codigoServico")
-        if cod is None:
-            continue
+    cod = i.get("codigoServico")
+    if cod is not None:
         upsert("dadosabertos.servico_item", ["codigo_servico"], {
             "codigo_servico": _s(cod),
-            "codigo_subclasse": _s(it.get("codigoSubclasse")),
-            "nome_subclasse": it.get("nomeSubclasse"),
-            "codigo_classe": _s(it.get("codigoClasse")),
-            "nome_classe": it.get("nomeClasse"),
-            "codigo_grupo": _s(it.get("codigoGrupo")),
-            "nome_grupo": it.get("nomeGrupo"),
-            "codigo_divisao": _s(it.get("codigoDivisao")),
-            "nome_divisao": it.get("nomeDivisao"),
-            "codigo_secao": _s(it.get("codigoSecao")),
-            "nome_secao": it.get("nomeSecao"),
-            "nome_servico": it.get("nomeServico"),
-            "codigo_cpc": _s(it.get("codigoCpc")),
-            "status_servico": it.get("statusServico"),
-            "data_atualizacao": it.get("dataHoraAtualizacao"),
+            "codigo_subclasse": _s(sub),
+            "nome_subclasse": i.get("nomeSubclasse"),
+            "codigo_classe": _s(c),
+            "nome_classe": i.get("nomeClasse"),
+            "codigo_grupo": _s(g),
+            "nome_grupo": i.get("nomeGrupo"),
+            "codigo_divisao": _s(div),
+            "nome_divisao": i.get("nomeDivisao"),
+            "codigo_secao": _s(secao),
+            "nome_secao": i.get("nomeSecao"),
+            "nome_servico": i.get("nomeServico"),
+            "codigo_cpc": _s(i.get("codigoCpc")),
+            "status_servico": i.get("statusServico"),
+            "data_atualizacao": i.get("dataHoraAtualizacao"),
             "fonte": "dadosabertos_servico_item",
             "fonte_url": SVC_ITEM,
-            "raw_json": it,
+            "raw_json": i,
         })
-        n += 1
-    return n
-
-
-def coletar_hierarquia_servico() -> int:
-    total = map_workers(
-        lambda f: f(),
-        [_svc_secao, _svc_divisao, _svc_grupo, _svc_classe, _svc_subclasse, _svc_item],
-        desc="svc_hier",
-        reducer=sum_int,
-    )
-    log.info("hierarquia servico=%d", total)
-    return total
 
 
 # =====================================================================

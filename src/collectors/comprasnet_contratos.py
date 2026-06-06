@@ -12,6 +12,7 @@ import logging
 from ..config import COMPRASNET_CONTRATOS_BASE
 from ..http_client import get_json
 from ..db import cursor, upsert
+from ..parallel import map_workers, sum_tuple
 
 log = logging.getLogger(__name__)
 
@@ -75,23 +76,34 @@ def _pncp_contratos_para_buscar():
 
 
 def coletar_contratos_e_subrotas() -> tuple[int, int]:
+    pncp_contratos = _pncp_contratos_para_buscar()
+    total, total_sub = map_workers(
+        _coletar_um_contrato_comprasnet,
+        pncp_contratos,
+        desc="comprasnet",
+        reducer=sum_tuple(2),
+    )
+    log.info("comprasnet contratos=%d subrotas=%d", total, total_sub)
+    return total, total_sub
+
+
+def _coletar_um_contrato_comprasnet(pncp_row) -> tuple[int, int]:
+    ncp, ug, numero, ano, tipo_id = pncp_row
+    numeroano = _normalizar_numeroano(numero, ano)
+    if not numeroano:
+        return 0, 0
+    url = f"{COMPRASNET_CONTRATOS_BASE}/contrato/ugorigem/{ug}/numeroano/{numeroano}"
+    data = get_json(url)
+    if not data and tipo_id and int(tipo_id) != 1:
+        numeroano12 = _normalizar_numeroano_12(numero, ano)
+        url = f"{COMPRASNET_CONTRATOS_BASE}/contrato/ugorigem/{ug}/numeroano/{numeroano12}"
+        data = get_json(url)
+    if not data:
+        return 0, 0
     total = 0
     total_sub = 0
-    for ncp, ug, numero, ano, tipo_id in _pncp_contratos_para_buscar():
-        numeroano = _normalizar_numeroano(numero, ano)
-        if not numeroano:
-            continue
-        url = f"{COMPRASNET_CONTRATOS_BASE}/contrato/ugorigem/{ug}/numeroano/{numeroano}"
-        data = get_json(url)
-        # se tipo == empenho (nao 1), tenta o formato 12 chars
-        if not data and tipo_id and int(tipo_id) != 1:
-            numeroano12 = _normalizar_numeroano_12(numero, ano)
-            url = f"{COMPRASNET_CONTRATOS_BASE}/contrato/ugorigem/{ug}/numeroano/{numeroano12}"
-            data = get_json(url)
-        if not data:
-            continue
-        registros = data if isinstance(data, list) else [data]
-        for c in registros:
+    registros = data if isinstance(data, list) else [data]
+    for c in registros:
             cid = c.get("id")
             if not cid:
                 continue
@@ -150,7 +162,6 @@ def coletar_contratos_e_subrotas() -> tuple[int, int]:
             upsert("comprasnet.contratos", ["id"], row)
             total += 1
             total_sub += _coletar_subrotas(cid, c.get("links") or {})
-    log.info("comprasnet contratos=%d subrotas=%d", total, total_sub)
     return total, total_sub
 
 

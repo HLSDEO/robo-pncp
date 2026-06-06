@@ -1,33 +1,51 @@
-import json
 import logging
 from contextlib import contextmanager
+
 import psycopg
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
-from .config import DB, UNIDADES_PF
+from .config import DB, WORKERS, UNIDADES_PF
 
 log = logging.getLogger(__name__)
 
-_pool_conn: psycopg.Connection | None = None
+_pool: ConnectionPool | None = None
 
 
-def connect() -> psycopg.Connection:
-    global _pool_conn
-    if _pool_conn is None or _pool_conn.closed:
-        _pool_conn = psycopg.connect(**DB, autocommit=False)
-    return _pool_conn
+def _conninfo() -> str:
+    return (
+        f"host={DB['host']} port={DB['port']} dbname={DB['dbname']} "
+        f"user={DB['user']} password={DB['password']}"
+    )
+
+
+def pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        # WORKERS + 2 = folga para meta.execucao e seed rodando em paralelo
+        max_size = WORKERS + 2
+        _pool = ConnectionPool(
+            conninfo=_conninfo(),
+            min_size=1,
+            max_size=max_size,
+            kwargs={"autocommit": False},
+        )
+        _pool.wait()
+        log.info("pool inicializado size=%d", max_size)
+    return _pool
 
 
 @contextmanager
 def cursor():
-    conn = connect()
-    try:
-        with conn.cursor() as cur:
-            yield cur
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    """Pega conexao do pool, commit no sucesso, rollback no erro."""
+    with pool().connection() as conn:
+        try:
+            with conn.cursor() as cur:
+                yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def seed_unidades():
@@ -84,7 +102,7 @@ def upsert(table: str, pk_cols: list[str], row: dict):
     values = []
     for c in cols:
         v = row[c]
-        if c == "raw_json" or (isinstance(v, (dict, list)) and c != "raw_json"):
+        if c == "raw_json" or isinstance(v, (dict, list)):
             values.append(Jsonb(v))
         else:
             values.append(v)

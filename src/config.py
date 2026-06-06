@@ -13,6 +13,7 @@ LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "21600"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "50"))
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "60"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+WORKERS = int(os.getenv("WORKERS", "4"))
 
 PNCP_BASE = "https://pncp.gov.br"
 COMPRASNET_CONTRATOS_BASE = "https://contratos.comprasnet.gov.br/api"

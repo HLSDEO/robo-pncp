@@ -38,6 +38,7 @@ services:
       PAGE_SIZE: ${PAGE_SIZE:-50}
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-60}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKERS: ${WORKERS:-4}
       # ----- Observabilidade -----
       OBS_ENABLED: ${OBS_ENABLED:-true}
       OBS_URL: ${OBS_URL:-http://backend:8000/api/logs}

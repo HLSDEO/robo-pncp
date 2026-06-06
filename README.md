@@ -33,6 +33,26 @@ procedência do dado nunca se perca. Cada endpoint vai para sua própria tabela
 Lista completa em [`src/config.py`](src/config.py) (`UNIDADES_PF`). Cobre as
 SRs estaduais, DLOG, DTI, DCI, DIP, DIREN-ANP, DITEC e as DPFs descentralizadas.
 
+## Paralelismo
+
+O coletor processa **`WORKERS` unidades/editais em paralelo** (default `4`)
+usando `ThreadPoolExecutor`:
+
+- `coletar_editais` — `WORKERS` unidades da PF simultaneamente.
+- `coletar_itens_e_resultados` — `WORKERS` editais (e depois itens com resultado) simultaneamente.
+- `coletar_atas` / `coletar_contratos` — `WORKERS` editais simultaneamente.
+- Comprasnet (`coletar_contratos_e_subrotas`) — `WORKERS` contratos simultaneamente.
+- Dados Abertos ARP — `WORKERS` CNPJs e ARPs simultaneamente.
+
+A ordem **entre etapas** continua sequencial (editais → drill-downs → contratos →
+ARP) — só paralelizamos dentro de cada etapa.
+
+Thread-safety:
+- Pool de conexões PG via `psycopg_pool.ConnectionPool` (`min=1`, `max=WORKERS+2`).
+- `httpx.Client` é thread-safe (singleton).
+- `obs_logger` usa `queue.Queue` (thread-safe) + worker dedicado.
+- Exceção em um worker é capturada por item — não derruba a rodada.
+
 ## Estratégia de coleta sem perda
 
 - Tabelas separadas por endpoint.
@@ -70,6 +90,7 @@ init.
 | `PAGE_SIZE`             | `50`    | Tamanho da página nas APIs paginadas            |
 | `HTTP_TIMEOUT`          | `60`    | Timeout HTTP (s)                                |
 | `LOG_LEVEL`             | `INFO`  | `DEBUG`, `INFO`, `WARNING`, `ERROR`             |
+| `WORKERS`               | `4`     | Threads concorrentes. Pool PG = `WORKERS + 2`.   |
 
 ## Observabilidade
 

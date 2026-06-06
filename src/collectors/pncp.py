@@ -5,6 +5,7 @@ from typing import Iterable
 from ..config import PNCP_BASE, PAGE_SIZE, UNIDADES_PF
 from ..http_client import get_json
 from ..db import upsert, listar_editais_para_drilldown, listar_itens_com_resultado
+from ..parallel import map_workers, sum_int, sum_tuple
 from .. import obs_logger
 
 log = logging.getLogger(__name__)
@@ -20,14 +21,20 @@ def _sigla_da_unidade(codigo: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------
+# 1) EDITAIS  - paraleliza por unidade
+# ---------------------------------------------------------------------
+
 def coletar_editais() -> int:
-    """Itera todas as unidades da PF, busca editais no /api/search/ e grava."""
-    total = 0
-    for sigla, codigo in UNIDADES_PF.items():
+    """Itera todas as unidades da PF em paralelo, busca editais no /api/search/ e grava."""
+    def _run(par: tuple[str, str]) -> int:
+        sigla, codigo = par
         log.info("editais [%s / %s]", sigla, codigo)
         with obs_logger.step("UNIDADE", identifier_2=sigla, identifier_3=codigo,
                              location="pncp.coletar_editais"):
-            total += _coletar_editais_unidade(sigla, codigo)
+            return _coletar_editais_unidade(sigla, codigo)
+
+    total = map_workers(_run, list(UNIDADES_PF.items()), desc="editais", reducer=sum_int)
     log.info("editais coletados: %d", total)
     return total
 
@@ -101,6 +108,10 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> int:
     return total_unidade
 
 
+# ---------------------------------------------------------------------
+# Paginacao generica PNCP v1
+# ---------------------------------------------------------------------
+
 def _paginar_pncp_v1(url: str) -> Iterable[dict]:
     """Pagina endpoints v1 que retornam {data: [...], totalPaginas, ...} OU lista direta."""
     pagina = 1
@@ -125,200 +136,232 @@ def _paginar_pncp_v1(url: str) -> Iterable[dict]:
         pagina += 1
 
 
-def coletar_itens_e_resultados() -> tuple[int, int]:
-    """Para cada edital ja em pncp.editais, busca itens e (se tem_resultado) resultados."""
-    tot_itens = 0
-    tot_resultados = 0
-    for orgao_cnpj, ano, seq, _ncp in listar_editais_para_drilldown():
-        base_itens = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens"
-        for it in _paginar_pncp_v1(base_itens):
-            row = {
-                "orgao_cnpj": orgao_cnpj,
-                "ano": ano,
-                "numero_sequencial": seq,
-                "numero_item": it.get("numeroItem"),
-                "descricao": it.get("descricao"),
-                "material_ou_servico": it.get("materialOuServico"),
-                "material_ou_servico_nome": it.get("materialOuServicoNome"),
-                "valor_unitario_estimado": it.get("valorUnitarioEstimado"),
-                "quantidade": it.get("quantidade"),
-                "unidade_medida": it.get("unidadeMedida"),
-                "situacao_id": it.get("situacaoCompraItem"),
-                "situacao_nome": it.get("situacaoCompraItemNome"),
-                "tem_resultado": it.get("temResultado"),
-                "data_inclusao": it.get("dataInclusao"),
-                "data_atualizacao": it.get("dataAtualizacao"),
-                "fonte": "pncp_v1_itens",
-                "fonte_url": base_itens,
-                "raw_json": it,
-            }
-            if row["numero_item"] is None:
-                continue
-            upsert(
-                "pncp.edital_itens",
-                ["orgao_cnpj", "ano", "numero_sequencial", "numero_item"],
-                row,
-            )
-            tot_itens += 1
+# ---------------------------------------------------------------------
+# 2) ITENS + RESULTADOS  - paraleliza por edital e por item
+# ---------------------------------------------------------------------
 
-    for orgao_cnpj, ano, seq, numero_item in listar_itens_com_resultado():
-        url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens/{numero_item}/resultados"
-        data = get_json(url)
-        if not data:
-            continue
-        results = data if isinstance(data, list) else data.get("data") or []
-        for r in results:
-            seq_res = r.get("sequencialResultado") or 1
-            row = {
-                "orgao_cnpj": orgao_cnpj,
-                "ano": ano,
-                "numero_sequencial": seq,
-                "numero_item": numero_item,
-                "sequencial_resultado": seq_res,
-                "ni_fornecedor": r.get("niFornecedor"),
-                "tipo_pessoa": r.get("tipoPessoa"),
-                "nome_razao_social": r.get("nomeRazaoSocialFornecedor"),
-                "codigo_pais": r.get("codigoPais"),
-                "porte_fornecedor_id": r.get("porteFornecedorId"),
-                "porte_fornecedor_nome": r.get("porteFornecedorNome"),
-                "natureza_juridica_id": r.get("naturezaJuridicaId"),
-                "natureza_juridica_nome": r.get("naturezaJuridicaNome"),
-                "quantidade_homologada": r.get("quantidadeHomologada"),
-                "valor_unitario_homologado": r.get("valorUnitarioHomologado"),
-                "ordem_classificacao_srp": r.get("ordemClassificacaoSrp"),
-                "data_resultado": r.get("dataResultado"),
-                "situacao_id": r.get("situacaoCompraItemResultadoId"),
-                "situacao_nome": r.get("situacaoCompraItemResultadoNome"),
-                "numero_controle_pncp_compra": r.get("numeroControlePNCPCompra"),
-                "data_inclusao": r.get("dataInclusao"),
-                "data_atualizacao": r.get("dataAtualizacao"),
-                "fonte": "pncp_v1_resultados",
-                "fonte_url": url,
-                "raw_json": r,
-            }
-            upsert(
-                "pncp.edital_item_resultados",
-                [
-                    "orgao_cnpj",
-                    "ano",
-                    "numero_sequencial",
-                    "numero_item",
-                    "sequencial_resultado",
-                ],
-                row,
-            )
-            tot_resultados += 1
+def coletar_itens_e_resultados() -> tuple[int, int]:
+    editais = listar_editais_para_drilldown()
+    tot_itens = map_workers(
+        _coletar_itens_um_edital, editais, desc="itens", reducer=sum_int
+    )
+    itens_com_res = listar_itens_com_resultado()
+    tot_resultados = map_workers(
+        _coletar_resultados_um_item, itens_com_res, desc="resultados", reducer=sum_int
+    )
     log.info("itens=%d resultados=%d", tot_itens, tot_resultados)
     return tot_itens, tot_resultados
 
 
+def _coletar_itens_um_edital(edital: tuple[str, str, str, str]) -> int:
+    orgao_cnpj, ano, seq, _ncp = edital
+    base = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens"
+    n = 0
+    for it in _paginar_pncp_v1(base):
+        if it.get("numeroItem") is None:
+            continue
+        row = {
+            "orgao_cnpj": orgao_cnpj,
+            "ano": ano,
+            "numero_sequencial": seq,
+            "numero_item": it.get("numeroItem"),
+            "descricao": it.get("descricao"),
+            "material_ou_servico": it.get("materialOuServico"),
+            "material_ou_servico_nome": it.get("materialOuServicoNome"),
+            "valor_unitario_estimado": it.get("valorUnitarioEstimado"),
+            "quantidade": it.get("quantidade"),
+            "unidade_medida": it.get("unidadeMedida"),
+            "situacao_id": it.get("situacaoCompraItem"),
+            "situacao_nome": it.get("situacaoCompraItemNome"),
+            "tem_resultado": it.get("temResultado"),
+            "data_inclusao": it.get("dataInclusao"),
+            "data_atualizacao": it.get("dataAtualizacao"),
+            "fonte": "pncp_v1_itens",
+            "fonte_url": base,
+            "raw_json": it,
+        }
+        upsert(
+            "pncp.edital_itens",
+            ["orgao_cnpj", "ano", "numero_sequencial", "numero_item"],
+            row,
+        )
+        n += 1
+    return n
+
+
+def _coletar_resultados_um_item(item: tuple[str, str, str, int]) -> int:
+    orgao_cnpj, ano, seq, numero_item = item
+    url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens/{numero_item}/resultados"
+    data = get_json(url)
+    if not data:
+        return 0
+    results = data if isinstance(data, list) else data.get("data") or []
+    n = 0
+    for r in results:
+        seq_res = r.get("sequencialResultado") or 1
+        row = {
+            "orgao_cnpj": orgao_cnpj,
+            "ano": ano,
+            "numero_sequencial": seq,
+            "numero_item": numero_item,
+            "sequencial_resultado": seq_res,
+            "ni_fornecedor": r.get("niFornecedor"),
+            "tipo_pessoa": r.get("tipoPessoa"),
+            "nome_razao_social": r.get("nomeRazaoSocialFornecedor"),
+            "codigo_pais": r.get("codigoPais"),
+            "porte_fornecedor_id": r.get("porteFornecedorId"),
+            "porte_fornecedor_nome": r.get("porteFornecedorNome"),
+            "natureza_juridica_id": r.get("naturezaJuridicaId"),
+            "natureza_juridica_nome": r.get("naturezaJuridicaNome"),
+            "quantidade_homologada": r.get("quantidadeHomologada"),
+            "valor_unitario_homologado": r.get("valorUnitarioHomologado"),
+            "ordem_classificacao_srp": r.get("ordemClassificacaoSrp"),
+            "data_resultado": r.get("dataResultado"),
+            "situacao_id": r.get("situacaoCompraItemResultadoId"),
+            "situacao_nome": r.get("situacaoCompraItemResultadoNome"),
+            "numero_controle_pncp_compra": r.get("numeroControlePNCPCompra"),
+            "data_inclusao": r.get("dataInclusao"),
+            "data_atualizacao": r.get("dataAtualizacao"),
+            "fonte": "pncp_v1_resultados",
+            "fonte_url": url,
+            "raw_json": r,
+        }
+        upsert(
+            "pncp.edital_item_resultados",
+            ["orgao_cnpj", "ano", "numero_sequencial", "numero_item", "sequencial_resultado"],
+            row,
+        )
+        n += 1
+    return n
+
+
+# ---------------------------------------------------------------------
+# 3) ATAS  - paraleliza por edital
+# ---------------------------------------------------------------------
+
 def coletar_atas() -> int:
-    total = 0
-    for orgao_cnpj, ano, seq, _ in listar_editais_para_drilldown():
-        url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/atas"
-        for a in _paginar_pncp_v1(url):
-            ncp = a.get("numeroControlePNCP")
-            if not ncp:
-                continue
-            orgao = a.get("orgaoEntidade") or {}
-            uni = a.get("unidadeOrgao") or {}
-            row = {
-                "numero_controle_pncp": ncp,
-                "numero_controle_pncp_compra": a.get("numeroControlePNCPCompra"),
-                "orgao_cnpj": orgao.get("cnpj") or orgao_cnpj,
-                "orgao_razao_social": orgao.get("razaoSocial"),
-                "unidade_codigo": uni.get("codigoUnidade"),
-                "unidade_nome": uni.get("nomeUnidade"),
-                "numero_ata": a.get("numeroAtaRegistroPreco"),
-                "ano_ata": a.get("anoAta"),
-                "sequencial_ata": a.get("sequencialAta"),
-                "data_assinatura": a.get("dataAssinatura"),
-                "data_vigencia_inicio": a.get("dataVigenciaInicio"),
-                "data_vigencia_fim": a.get("dataVigenciaFim"),
-                "data_cancelamento": a.get("dataCancelamento"),
-                "cancelado": a.get("cancelado"),
-                "data_publicacao_pncp": a.get("dataPublicacaoPncp"),
-                "data_inclusao": a.get("dataInclusao"),
-                "data_atualizacao": a.get("dataAtualizacao"),
-                "data_atualizacao_global": a.get("dataAtualizacaoGlobal"),
-                "modalidade_nome": a.get("modalidadeNome"),
-                "objeto_compra": a.get("objetoCompra"),
-                "informacao_complementar": a.get("informacaoComplementarCompra"),
-                "fonte": "pncp_v1_atas",
-                "fonte_url": url,
-                "raw_json": a,
-            }
-            upsert("pncp.atas", ["numero_controle_pncp"], row)
-            total += 1
-            obs_logger.send(
-                identifier="ATA",
-                identifier_2=row["orgao_cnpj"],
-                identifier_3=ncp,
-                data=row.get("numero_ata") or "",
-                type_="success",
-                location="pncp.coletar_atas",
-            )
+    editais = listar_editais_para_drilldown()
+    total = map_workers(_coletar_atas_um_edital, editais, desc="atas", reducer=sum_int)
     log.info("atas=%d", total)
     return total
 
 
+def _coletar_atas_um_edital(edital: tuple[str, str, str, str]) -> int:
+    orgao_cnpj, ano, seq, _ncp = edital
+    url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/atas"
+    n = 0
+    for a in _paginar_pncp_v1(url):
+        ncp = a.get("numeroControlePNCP")
+        if not ncp:
+            continue
+        orgao = a.get("orgaoEntidade") or {}
+        uni = a.get("unidadeOrgao") or {}
+        row = {
+            "numero_controle_pncp": ncp,
+            "numero_controle_pncp_compra": a.get("numeroControlePNCPCompra"),
+            "orgao_cnpj": orgao.get("cnpj") or orgao_cnpj,
+            "orgao_razao_social": orgao.get("razaoSocial"),
+            "unidade_codigo": uni.get("codigoUnidade"),
+            "unidade_nome": uni.get("nomeUnidade"),
+            "numero_ata": a.get("numeroAtaRegistroPreco"),
+            "ano_ata": a.get("anoAta"),
+            "sequencial_ata": a.get("sequencialAta"),
+            "data_assinatura": a.get("dataAssinatura"),
+            "data_vigencia_inicio": a.get("dataVigenciaInicio"),
+            "data_vigencia_fim": a.get("dataVigenciaFim"),
+            "data_cancelamento": a.get("dataCancelamento"),
+            "cancelado": a.get("cancelado"),
+            "data_publicacao_pncp": a.get("dataPublicacaoPncp"),
+            "data_inclusao": a.get("dataInclusao"),
+            "data_atualizacao": a.get("dataAtualizacao"),
+            "data_atualizacao_global": a.get("dataAtualizacaoGlobal"),
+            "modalidade_nome": a.get("modalidadeNome"),
+            "objeto_compra": a.get("objetoCompra"),
+            "informacao_complementar": a.get("informacaoComplementarCompra"),
+            "fonte": "pncp_v1_atas",
+            "fonte_url": url,
+            "raw_json": a,
+        }
+        upsert("pncp.atas", ["numero_controle_pncp"], row)
+        n += 1
+        obs_logger.send(
+            identifier="ATA",
+            identifier_2=row["orgao_cnpj"],
+            identifier_3=ncp,
+            data=row.get("numero_ata") or "",
+            type_="success",
+            location="pncp.coletar_atas",
+        )
+    return n
+
+
+# ---------------------------------------------------------------------
+# 4) CONTRATOS PNCP  - paraleliza por edital
+# ---------------------------------------------------------------------
+
 def coletar_contratos() -> int:
-    total = 0
-    for orgao_cnpj, ano, seq, _ in listar_editais_para_drilldown():
-        url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/contratos/contratacao/{ano}/{seq}/"
-        for c in _paginar_pncp_v1(url):
-            ncp = c.get("numeroControlePNCP")
-            if not ncp:
-                continue
-            orgao = c.get("orgaoEntidade") or {}
-            uni = c.get("unidadeOrgao") or {}
-            tipo = c.get("tipoContrato") or {}
-            cat = c.get("categoriaProcesso") or {}
-            row = {
-                "numero_controle_pncp": ncp,
-                "numero_controle_pncp_compra": c.get("numeroControlePncpCompra"),
-                "ano_contrato": c.get("anoContrato"),
-                "numero_contrato_empenho": c.get("numeroContratoEmpenho"),
-                "sequencial_contrato": c.get("sequencialContrato"),
-                "tipo_contrato_id": tipo.get("id"),
-                "tipo_contrato_nome": tipo.get("nome"),
-                "orgao_cnpj": orgao.get("cnpj") or orgao_cnpj,
-                "orgao_razao_social": orgao.get("razaoSocial"),
-                "orgao_esfera_id": orgao.get("esferaId"),
-                "orgao_poder_id": orgao.get("poderId"),
-                "unidade_codigo": uni.get("codigoUnidade"),
-                "unidade_nome": uni.get("nomeUnidade"),
-                "ni_fornecedor": c.get("niFornecedor"),
-                "tipo_pessoa": c.get("tipoPessoa"),
-                "nome_razao_social_fornecedor": c.get("nomeRazaoSocialFornecedor"),
-                "codigo_pais_fornecedor": c.get("codigoPaisFornecedor"),
-                "categoria_processo_id": cat.get("id"),
-                "categoria_processo_nome": cat.get("nome"),
-                "processo": c.get("processo"),
-                "objeto_contrato": c.get("objetoContrato"),
-                "valor_inicial": c.get("valorInicial"),
-                "valor_global": c.get("valorGlobal"),
-                "valor_parcela": c.get("valorParcela"),
-                "numero_parcelas": c.get("numeroParcelas"),
-                "data_assinatura": c.get("dataAssinatura"),
-                "data_vigencia_inicio": c.get("dataVigenciaInicio"),
-                "data_vigencia_fim": c.get("dataVigenciaFim"),
-                "data_publicacao_pncp": c.get("dataPublicacaoPncp"),
-                "data_atualizacao": c.get("dataAtualizacao"),
-                "data_atualizacao_global": c.get("dataAtualizacaoGlobal"),
-                "fonte": "pncp_v1_contratos",
-                "fonte_url": url,
-                "raw_json": c,
-            }
-            upsert("pncp.contratos", ["numero_controle_pncp"], row)
-            total += 1
-            obs_logger.send(
-                identifier="CONTRATO",
-                identifier_2=row["orgao_cnpj"],
-                identifier_3=ncp,
-                data=(row.get("objeto_contrato") or "")[:200],
-                type_="success",
-                location="pncp.coletar_contratos",
-            )
+    editais = listar_editais_para_drilldown()
+    total = map_workers(_coletar_contratos_um_edital, editais, desc="contratos", reducer=sum_int)
     log.info("contratos=%d", total)
     return total
+
+
+def _coletar_contratos_um_edital(edital: tuple[str, str, str, str]) -> int:
+    orgao_cnpj, ano, seq, _ncp = edital
+    url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/contratos/contratacao/{ano}/{seq}/"
+    n = 0
+    for c in _paginar_pncp_v1(url):
+        ncp = c.get("numeroControlePNCP")
+        if not ncp:
+            continue
+        orgao = c.get("orgaoEntidade") or {}
+        uni = c.get("unidadeOrgao") or {}
+        tipo = c.get("tipoContrato") or {}
+        cat = c.get("categoriaProcesso") or {}
+        row = {
+            "numero_controle_pncp": ncp,
+            "numero_controle_pncp_compra": c.get("numeroControlePncpCompra"),
+            "ano_contrato": c.get("anoContrato"),
+            "numero_contrato_empenho": c.get("numeroContratoEmpenho"),
+            "sequencial_contrato": c.get("sequencialContrato"),
+            "tipo_contrato_id": tipo.get("id"),
+            "tipo_contrato_nome": tipo.get("nome"),
+            "orgao_cnpj": orgao.get("cnpj") or orgao_cnpj,
+            "orgao_razao_social": orgao.get("razaoSocial"),
+            "orgao_esfera_id": orgao.get("esferaId"),
+            "orgao_poder_id": orgao.get("poderId"),
+            "unidade_codigo": uni.get("codigoUnidade"),
+            "unidade_nome": uni.get("nomeUnidade"),
+            "ni_fornecedor": c.get("niFornecedor"),
+            "tipo_pessoa": c.get("tipoPessoa"),
+            "nome_razao_social_fornecedor": c.get("nomeRazaoSocialFornecedor"),
+            "codigo_pais_fornecedor": c.get("codigoPaisFornecedor"),
+            "categoria_processo_id": cat.get("id"),
+            "categoria_processo_nome": cat.get("nome"),
+            "processo": c.get("processo"),
+            "objeto_contrato": c.get("objetoContrato"),
+            "valor_inicial": c.get("valorInicial"),
+            "valor_global": c.get("valorGlobal"),
+            "valor_parcela": c.get("valorParcela"),
+            "numero_parcelas": c.get("numeroParcelas"),
+            "data_assinatura": c.get("dataAssinatura"),
+            "data_vigencia_inicio": c.get("dataVigenciaInicio"),
+            "data_vigencia_fim": c.get("dataVigenciaFim"),
+            "data_publicacao_pncp": c.get("dataPublicacaoPncp"),
+            "data_atualizacao": c.get("dataAtualizacao"),
+            "data_atualizacao_global": c.get("dataAtualizacaoGlobal"),
+            "fonte": "pncp_v1_contratos",
+            "fonte_url": url,
+            "raw_json": c,
+        }
+        upsert("pncp.contratos", ["numero_controle_pncp"], row)
+        n += 1
+        obs_logger.send(
+            identifier="CONTRATO",
+            identifier_2=row["orgao_cnpj"],
+            identifier_3=ncp,
+            data=(row.get("objeto_contrato") or "")[:200],
+            type_="success",
+            location="pncp.coletar_contratos",
+        )
+    return n

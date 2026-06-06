@@ -9,6 +9,7 @@ import logging
 from ..config import DADOSABERTOS_BASE, PAGE_SIZE
 from ..http_client import get_json
 from ..db import upsert, cursor
+from ..parallel import map_workers, sum_int, sum_tuple
 
 log = logging.getLogger(__name__)
 
@@ -186,108 +187,123 @@ def _arp_a_buscar():
 
 
 def coletar_arp_e_dependentes() -> tuple[int, int, int, int]:
-    tot_arp = tot_itens = tot_emp = tot_ades = 0
     cnpjs, atas_pncp = _arp_a_buscar()
 
-    for cnpj in cnpjs:
-        for a in _paginar_dadosabertos(ARP_URL, {"cnpjOrgao": cnpj}):
-            ncp = _g(a, "numeroControlePNCPAta", "numeroControlePNCP")
-            if not ncp:
-                continue
-            upsert("dadosabertos.arp", ["numero_controle_pncp_ata"], {
-                "numero_controle_pncp_ata": ncp,
-                "numero_controle_pncp_compra": _g(a, "numeroControlePNCPCompra"),
-                "orgao_cnpj": _g(a, "cnpjOrgao") or cnpj,
-                "unidade_codigo": _g(a, "codigoUnidade"),
-                "numero_ata": _g(a, "numeroAtaRegistroPreco", "numeroAta"),
-                "ano_ata": _g(a, "anoAta"),
-                "sequencial_ata": _g(a, "sequencialAta"),
-                "data_assinatura": _g(a, "dataAssinatura"),
-                "data_vigencia_inicio": _g(a, "dataVigenciaInicio"),
-                "data_vigencia_fim": _g(a, "dataVigenciaFim"),
-                "cancelado": _g(a, "cancelado"),
-                "fonte": "dadosabertos_arp",
-                "fonte_url": ARP_URL,
-                "raw_json": a,
-            })
-            tot_arp += 1
+    # 1) ARPs por CNPJ (em paralelo)
+    tot_arp = map_workers(_coletar_arp_por_cnpj, cnpjs, desc="arp_cnpj", reducer=sum_int)
 
-    # Itens, empenhos, adesoes por ARP coletada (e tambem pelas atas vindas do PNCP)
+    # 2) Itens, empenhos, adesoes por ARP NCP (em paralelo)
     with cursor() as cur:
         cur.execute("SELECT numero_controle_pncp_ata FROM dadosabertos.arp")
         arp_ncps = {r[0] for r in cur.fetchall()}
     arp_ncps |= {a[0] for a in atas_pncp}
 
-    for ncp in arp_ncps:
-        for it in _paginar_dadosabertos(ARP_ITENS_URL, {"numeroControlePNCPAta": ncp}):
-            num = _g(it, "numeroItem")
-            if num is None:
-                continue
-            upsert(
-                "dadosabertos.arp_itens",
-                ["numero_controle_pncp_ata", "numero_item"],
-                {
-                    "numero_controle_pncp_ata": ncp,
-                    "numero_item": num,
-                    "descricao": _g(it, "descricao"),
-                    "material_ou_servico": _g(it, "materialOuServico"),
-                    "quantidade_registrada": _g(it, "quantidadeRegistrada", "quantidade"),
-                    "valor_unitario_registrado": _g(it, "valorUnitarioRegistrado", "valorUnitario"),
-                    "unidade_medida": _g(it, "unidadeMedida"),
-                    "ni_fornecedor": _g(it, "niFornecedor", "cnpjFornecedor"),
-                    "nome_razao_social": _g(it, "nomeRazaoSocialFornecedor", "razaoSocial"),
-                    "fonte": "dadosabertos_arp_itens",
-                    "fonte_url": ARP_ITENS_URL,
-                    "raw_json": it,
-                },
-            )
-            tot_itens += 1
-
-        for emp in _paginar_dadosabertos(ARP_EMP_URL, {"numeroControlePNCPAta": ncp}):
-            num_item = _g(emp, "numeroItem")
-            num_emp = _g(emp, "numeroEmpenho")
-            if num_item is None or not num_emp:
-                continue
-            upsert(
-                "dadosabertos.arp_item_empenhos",
-                ["numero_controle_pncp_ata", "numero_item", "numero_empenho"],
-                {
-                    "numero_controle_pncp_ata": ncp,
-                    "numero_item": num_item,
-                    "numero_empenho": str(num_emp),
-                    "ug_empenho": _g(emp, "ugEmpenho", "codigoUg"),
-                    "data_empenho": _g(emp, "dataEmpenho"),
-                    "valor_empenhado": _g(emp, "valorEmpenhado"),
-                    "quantidade_empenhada": _g(emp, "quantidadeEmpenhada"),
-                    "fonte": "dadosabertos_arp_empenhos",
-                    "fonte_url": ARP_EMP_URL,
-                    "raw_json": emp,
-                },
-            )
-            tot_emp += 1
-
-        for ad in _paginar_dadosabertos(ARP_ADESAO_URL, {"numeroControlePNCPAta": ncp}):
-            num_item = _g(ad, "numeroItem")
-            seq = _g(ad, "sequencialAdesao", "sequencial") or 1
-            if num_item is None:
-                continue
-            upsert(
-                "dadosabertos.arp_item_adesoes",
-                ["numero_controle_pncp_ata", "numero_item", "sequencial_adesao"],
-                {
-                    "numero_controle_pncp_ata": ncp,
-                    "numero_item": num_item,
-                    "sequencial_adesao": seq,
-                    "cnpj_aderente": _g(ad, "cnpjAderente", "cnpjOrgaoAderente"),
-                    "nome_aderente": _g(ad, "nomeAderente", "razaoSocialAderente"),
-                    "quantidade_aderida": _g(ad, "quantidadeAderida"),
-                    "valor_aderido": _g(ad, "valorAderido"),
-                    "data_adesao": _g(ad, "dataAdesao"),
-                    "fonte": "dadosabertos_arp_adesoes",
-                    "fonte_url": ARP_ADESAO_URL,
-                    "raw_json": ad,
-                },
-            )
-            tot_ades += 1
+    tot_itens, tot_emp, tot_ades = map_workers(
+        _coletar_arp_dependentes_um_ncp,
+        list(arp_ncps),
+        desc="arp_deps",
+        reducer=sum_tuple(3),
+    )
     log.info("arp=%d itens=%d emp=%d ades=%d", tot_arp, tot_itens, tot_emp, tot_ades)
     return tot_arp, tot_itens, tot_emp, tot_ades
+
+
+def _coletar_arp_por_cnpj(cnpj: str) -> int:
+    n = 0
+    for a in _paginar_dadosabertos(ARP_URL, {"cnpjOrgao": cnpj}):
+        ncp = _g(a, "numeroControlePNCPAta", "numeroControlePNCP")
+        if not ncp:
+            continue
+        upsert("dadosabertos.arp", ["numero_controle_pncp_ata"], {
+            "numero_controle_pncp_ata": ncp,
+            "numero_controle_pncp_compra": _g(a, "numeroControlePNCPCompra"),
+            "orgao_cnpj": _g(a, "cnpjOrgao") or cnpj,
+            "unidade_codigo": _g(a, "codigoUnidade"),
+            "numero_ata": _g(a, "numeroAtaRegistroPreco", "numeroAta"),
+            "ano_ata": _g(a, "anoAta"),
+            "sequencial_ata": _g(a, "sequencialAta"),
+            "data_assinatura": _g(a, "dataAssinatura"),
+            "data_vigencia_inicio": _g(a, "dataVigenciaInicio"),
+            "data_vigencia_fim": _g(a, "dataVigenciaFim"),
+            "cancelado": _g(a, "cancelado"),
+            "fonte": "dadosabertos_arp",
+            "fonte_url": ARP_URL,
+            "raw_json": a,
+        })
+        n += 1
+    return n
+
+
+def _coletar_arp_dependentes_um_ncp(ncp: str) -> tuple[int, int, int]:
+    tot_itens = tot_emp = tot_ades = 0
+    for it in _paginar_dadosabertos(ARP_ITENS_URL, {"numeroControlePNCPAta": ncp}):
+        num = _g(it, "numeroItem")
+        if num is None:
+            continue
+        upsert(
+            "dadosabertos.arp_itens",
+            ["numero_controle_pncp_ata", "numero_item"],
+            {
+                "numero_controle_pncp_ata": ncp,
+                "numero_item": num,
+                "descricao": _g(it, "descricao"),
+                "material_ou_servico": _g(it, "materialOuServico"),
+                "quantidade_registrada": _g(it, "quantidadeRegistrada", "quantidade"),
+                "valor_unitario_registrado": _g(it, "valorUnitarioRegistrado", "valorUnitario"),
+                "unidade_medida": _g(it, "unidadeMedida"),
+                "ni_fornecedor": _g(it, "niFornecedor", "cnpjFornecedor"),
+                "nome_razao_social": _g(it, "nomeRazaoSocialFornecedor", "razaoSocial"),
+                "fonte": "dadosabertos_arp_itens",
+                "fonte_url": ARP_ITENS_URL,
+                "raw_json": it,
+            },
+        )
+        tot_itens += 1
+
+    for emp in _paginar_dadosabertos(ARP_EMP_URL, {"numeroControlePNCPAta": ncp}):
+        num_item = _g(emp, "numeroItem")
+        num_emp = _g(emp, "numeroEmpenho")
+        if num_item is None or not num_emp:
+            continue
+        upsert(
+            "dadosabertos.arp_item_empenhos",
+            ["numero_controle_pncp_ata", "numero_item", "numero_empenho"],
+            {
+                "numero_controle_pncp_ata": ncp,
+                "numero_item": num_item,
+                "numero_empenho": str(num_emp),
+                "ug_empenho": _g(emp, "ugEmpenho", "codigoUg"),
+                "data_empenho": _g(emp, "dataEmpenho"),
+                "valor_empenhado": _g(emp, "valorEmpenhado"),
+                "quantidade_empenhada": _g(emp, "quantidadeEmpenhada"),
+                "fonte": "dadosabertos_arp_empenhos",
+                "fonte_url": ARP_EMP_URL,
+                "raw_json": emp,
+            },
+        )
+        tot_emp += 1
+
+    for ad in _paginar_dadosabertos(ARP_ADESAO_URL, {"numeroControlePNCPAta": ncp}):
+        num_item = _g(ad, "numeroItem")
+        seq = _g(ad, "sequencialAdesao", "sequencial") or 1
+        if num_item is None:
+            continue
+        upsert(
+            "dadosabertos.arp_item_adesoes",
+            ["numero_controle_pncp_ata", "numero_item", "sequencial_adesao"],
+            {
+                "numero_controle_pncp_ata": ncp,
+                "numero_item": num_item,
+                "sequencial_adesao": seq,
+                "cnpj_aderente": _g(ad, "cnpjAderente", "cnpjOrgaoAderente"),
+                "nome_aderente": _g(ad, "nomeAderente", "razaoSocialAderente"),
+                "quantidade_aderida": _g(ad, "quantidadeAderida"),
+                "valor_aderido": _g(ad, "valorAderido"),
+                "data_adesao": _g(ad, "dataAdesao"),
+                "fonte": "dadosabertos_arp_adesoes",
+                "fonte_url": ARP_ADESAO_URL,
+                "raw_json": ad,
+            },
+        )
+        tot_ades += 1
+    return tot_itens, tot_emp, tot_ades

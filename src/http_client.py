@@ -32,16 +32,16 @@ class HttpRetryable(Exception):
 
 def _api_tag(url: str) -> str:
     if "pncp.gov.br/api/search" in url:
-        return "PNCP_SEARCH"
+        return "PNCP_EDITAIS"
     if "pncp.gov.br/api/pncp/v1" in url:
         if "/itens/" in url and "/resultados" in url:
-            return "PNCP_V1_RESULTADOS"
+            return "PNCP_DETALHE_ITEM"
         if "/itens" in url:
-            return "PNCP_V1_ITENS"
+            return "PNCP_ITENS"
         if "/atas" in url:
-            return "PNCP_V1_ATAS"
+            return "PNCP_ATAS"
         if "/contratos/" in url:
-            return "PNCP_V1_CONTRATOS"
+            return "PNCP_CONTRATOS"
         return "PNCP_V1"
     if "contratos.comprasnet.gov.br" in url:
         if "/contrato/ugorigem/" in url:
@@ -71,16 +71,17 @@ def _now() -> datetime:
 def get_json(url: str, params: dict | None = None):
     """GET com retries. Retorna None em 404, raise em demais erros."""
     started = _now()
+    full_url = str(httpx.URL(url, params=params)) if params else url
     tag = _api_tag(url)
     try:
         try:
             r = client().get(url, params=params)
         except httpx.TransportError as e:
-            log.warning("transporte falhou %s: %s", url, e)
+            log.warning("transporte falhou %s: %s", full_url, e)
             obs_logger.send(
                 identifier="API",
                 identifier_2=tag,
-                identifier_3=url,
+                identifier_3=full_url,
                 data=f"transport error: {e}",
                 type_="error",
                 start_at=started,
@@ -91,7 +92,7 @@ def get_json(url: str, params: dict | None = None):
             obs_logger.send(
                 identifier="API",
                 identifier_2=tag,
-                identifier_3=url,
+                identifier_3=full_url,
                 data="404 not found",
                 type_="warning",
                 status_code="404",
@@ -100,24 +101,24 @@ def get_json(url: str, params: dict | None = None):
             )
             return None
         if r.status_code in (429, 500, 502, 503, 504):
-            log.warning("retryavel %s -> %s", url, r.status_code)
+            log.warning("retryavel %s -> %s", full_url, r.status_code)
             obs_logger.send(
                 identifier="API",
                 identifier_2=tag,
-                identifier_3=url,
+                identifier_3=full_url,
                 data=f"retryavel HTTP {r.status_code}",
                 type_="warning",
                 status_code=str(r.status_code),
                 start_at=started,
                 location="http_client.get_json",
             )
-            raise HttpRetryable(f"{r.status_code} em {url}")
+            raise HttpRetryable(f"{r.status_code} em {full_url}")
         r.raise_for_status()
         if not r.content:
             obs_logger.send(
                 identifier="API",
                 identifier_2=tag,
-                identifier_3=url,
+                identifier_3=full_url,
                 data="resposta vazia",
                 type_="success",
                 status_code=str(r.status_code),
@@ -128,7 +129,7 @@ def get_json(url: str, params: dict | None = None):
         obs_logger.send(
             identifier="API",
             identifier_2=tag,
-            identifier_3=url,
+            identifier_3=full_url,
             data="ok",
             type_="success",
             status_code=str(r.status_code),
@@ -142,7 +143,7 @@ def get_json(url: str, params: dict | None = None):
         obs_logger.send(
             identifier="API",
             identifier_2=tag,
-            identifier_3=url,
+            identifier_3=full_url,
             data=f"{type(e).__name__}: {e}",
             type_="error",
             start_at=started,

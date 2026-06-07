@@ -217,18 +217,152 @@ CREATE INDEX IF NOT EXISTS idx_comprasnet_contratos_ug      ON comprasnet_contra
 CREATE INDEX IF NOT EXISTS idx_comprasnet_contratos_edital  ON comprasnet_contratos (id_contrato_edital_pncp);
 CREATE INDEX IF NOT EXISTS idx_comprasnet_contratos_match   ON comprasnet_contratos (unidade_compra, licitacao_numero);
 
--- Sub-rotas: historico, empenhos, itens, faturas
-CREATE TABLE IF NOT EXISTS comprasnet_contrato_subrota (
-    contrato_id   BIGINT NOT NULL,
-    subrota       TEXT   NOT NULL,        -- 'historico','empenhos','itens','faturas'
-    item_id       TEXT   NOT NULL,        -- id do item ou hash; quando a API nao da id, usamos posicao
-    fonte         TEXT   NOT NULL,
-    fonte_url     TEXT   NOT NULL,
-    raw_json      JSONB  NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (contrato_id, subrota, item_id)
+-- ----- /api/contrato/{id}/historico -----
+-- Termos do contrato (contrato original + aditivos / apostilamentos).
+CREATE TABLE IF NOT EXISTS comprasnet_contrato_historico (
+    id                       BIGINT PRIMARY KEY,
+    contrato_id              BIGINT NOT NULL,
+    receita_despesa          TEXT,
+    numero                   TEXT,
+    observacao               TEXT,
+    ug                       TEXT,
+    gestao                   TEXT,
+    codigo_tipo              TEXT,
+    tipo                     TEXT,
+    categoria                TEXT,
+    qualificacao_termo       JSONB,        -- array [{codigo,descricao}]
+    processo                 TEXT,
+    objeto                   TEXT,
+    fundamento_legal_aditivo TEXT,
+    informacao_complementar  TEXT,
+    modalidade               TEXT,
+    licitacao_numero         TEXT,
+    codigo_unidade_origem    TEXT,
+    nome_unidade_origem      TEXT,
+    fornecedor_tipo          TEXT,
+    fornecedor_cnpj_cpf      TEXT,
+    fornecedor_nome          TEXT,
+    data_assinatura          DATE,
+    data_publicacao          DATE,
+    data_proposta_comercial  DATE,
+    vigencia_inicio          DATE,
+    vigencia_fim             DATE,
+    valor_inicial            NUMERIC(20,4),
+    valor_global             NUMERIC(20,4),
+    num_parcelas             INTEGER,
+    valor_parcela            NUMERIC(20,4),
+    novo_valor_global        NUMERIC(20,4),
+    novo_num_parcelas        INTEGER,
+    novo_valor_parcela       NUMERIC(20,4),
+    data_inicio_novo_valor   DATE,
+    retroativo               TEXT,
+    retroativo_mesref_de     TEXT,
+    retroativo_anoref_de     TEXT,
+    retroativo_mesref_ate    TEXT,
+    retroativo_anoref_ate    TEXT,
+    retroativo_vencimento    DATE,
+    retroativo_valor         NUMERIC(20,4),
+    situacao_contrato        TEXT,
+    criado_em                TIMESTAMPTZ,
+    alterado_em              TIMESTAMPTZ,
+    fonte                    TEXT NOT NULL,
+    fonte_url                TEXT NOT NULL,
+    raw_json                 JSONB NOT NULL,
+    coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_comprasnet_contrato_subrota_rota ON comprasnet_contrato_subrota (subrota);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contrato_historico_contrato ON comprasnet_contrato_historico (contrato_id);
+
+-- ----- /api/contrato/{id}/empenhos -----
+CREATE TABLE IF NOT EXISTS comprasnet_contrato_empenhos (
+    id                       BIGINT PRIMARY KEY,
+    contrato_id              BIGINT NOT NULL,
+    unidade_gestora          TEXT,
+    gestao                   TEXT,
+    numero                   TEXT,
+    data_emissao             DATE,
+    credor                   TEXT,        -- string composta "cnpj - nome"
+    credor_tipo              TEXT,
+    credor_cnpj_cpf          TEXT,
+    credor_nome              TEXT,
+    fonte_recurso            TEXT,
+    programa_trabalho        TEXT,
+    planointerno             TEXT,
+    naturezadespesa          TEXT,
+    empenhado                NUMERIC(20,4),
+    aliquidar                NUMERIC(20,4),
+    liquidado                NUMERIC(20,4),
+    pago                     NUMERIC(20,4),
+    rpinscrito               NUMERIC(20,4),
+    rpaliquidar              NUMERIC(20,4),
+    rpliquidado              NUMERIC(20,4),
+    rppago                   NUMERIC(20,4),
+    informacao_complementar  TEXT,
+    sistema_origem           TEXT,
+    links                    JSONB,        -- {documento_pagamento: url, ...}
+    fonte                    TEXT NOT NULL,
+    fonte_url                TEXT NOT NULL,
+    raw_json                 JSONB NOT NULL,
+    coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contrato_empenhos_contrato ON comprasnet_contrato_empenhos (contrato_id);
+
+-- ----- /api/contrato/{id}/itens -----
+CREATE TABLE IF NOT EXISTS comprasnet_contrato_itens (
+    id                       BIGINT PRIMARY KEY,
+    contrato_id              BIGINT NOT NULL,
+    tipo_id                  TEXT,        -- "Serviço" / "Material"
+    tipo_material            TEXT,
+    grupo_id                 TEXT,
+    catmatseritem_id         TEXT,
+    descricao_complementar   TEXT,
+    quantidade               NUMERIC(20,4),
+    valorunitario            NUMERIC(20,4),
+    valortotal               NUMERIC(20,4),
+    numero_item_compra       TEXT,
+    data_inicio_item         TIMESTAMPTZ,  -- payload vem como {date,timezone_type,timezone}
+    historico_item           JSONB,        -- array de termos que afetaram o item
+    fonte                    TEXT NOT NULL,
+    fonte_url                TEXT NOT NULL,
+    raw_json                 JSONB NOT NULL,
+    coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contrato_itens_contrato ON comprasnet_contrato_itens (contrato_id);
+
+-- ----- /api/contrato/{id}/faturas -----
+CREATE TABLE IF NOT EXISTS comprasnet_contrato_faturas (
+    id                         BIGINT PRIMARY KEY,
+    contrato_id                BIGINT NOT NULL,
+    tipolistafatura_id         TEXT,
+    tipo_instrumento_cobranca  TEXT,
+    justificativafatura_id     TEXT,
+    sfadrao_id                 TEXT,
+    numero                     TEXT,
+    emissao                    DATE,
+    prazo                      DATE,
+    vencimento                 DATE,
+    valor                      NUMERIC(20,4),
+    juros                      NUMERIC(20,4),
+    multa                      NUMERIC(20,4),
+    glosa                      NUMERIC(20,4),
+    valorliquido               NUMERIC(20,4),
+    processo                   TEXT,
+    protocolo                  DATE,
+    ateste                     DATE,
+    repactuacao                TEXT,
+    infcomplementar            TEXT,
+    mesref                     TEXT,
+    anoref                     TEXT,
+    situacao                   TEXT,
+    chave_nfe                  TEXT,
+    dados_empenho              JSONB,      -- array
+    dados_referencia           JSONB,      -- array
+    dados_item_faturado        JSONB,      -- array
+    fonte                      TEXT NOT NULL,
+    fonte_url                  TEXT NOT NULL,
+    raw_json                   JSONB NOT NULL,
+    coletado_em                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contrato_faturas_contrato ON comprasnet_contrato_faturas (contrato_id);
 
 -- =========================================================================
 -- Dados Abertos Comprasgov - dadosabertos.compras.gov.br

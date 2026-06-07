@@ -27,7 +27,9 @@ def client() -> httpx.Client:
 
 
 class HttpRetryable(Exception):
-    pass
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"HTTP {status_code}")
 
 
 def _api_tag(url: str) -> str:
@@ -68,84 +70,89 @@ def _now() -> datetime:
     retry=retry_if_exception_type((HttpRetryable, httpx.TransportError)),
     reraise=True,
 )
-def get_json(url: str, params: dict | None = None):
-    """GET com retries. Retorna None em 404, raise em demais erros."""
-    started = _now()
-    full_url = str(httpx.URL(url, params=params)) if params else url
-    tag = _api_tag(url)
+def _get_json_attempt(url: str, params: dict | None, full_url: str, tag: str, started: datetime):
+    """Uma tentativa. Loga em observabilidade apenas eventos terminais
+    (404, resposta vazia, ok). Erros retryaveis (transport / HTTP 429/5xx)
+    sao apenas relevantados pra o tenacity tentar de novo - o log de 'error'
+    fica por conta do wrapper get_json, que so dispara depois de esgotadas
+    as tentativas."""
     try:
-        try:
-            r = client().get(url, params=params)
-        except httpx.TransportError as e:
-            log.warning("transporte falhou %s: %s", full_url, e)
-            obs_logger.send(
-                identifier="API",
-                identifier_2=tag,
-                identifier_3=full_url,
-                data=f"transport error: {e}",
-                type_="error",
-                start_at=started,
-                location="http_client.get_json",
-            )
-            raise
-        if r.status_code == 404:
-            obs_logger.send(
-                identifier="API",
-                identifier_2=tag,
-                identifier_3=full_url,
-                data="404 not found",
-                type_="warning",
-                status_code="404",
-                start_at=started,
-                location="http_client.get_json",
-            )
-            return None
-        if r.status_code in (429, 500, 502, 503, 504):
-            log.warning("retryavel %s -> %s", full_url, r.status_code)
-            obs_logger.send(
-                identifier="API",
-                identifier_2=tag,
-                identifier_3=full_url,
-                data=f"retryavel HTTP {r.status_code}",
-                type_="warning",
-                status_code=str(r.status_code),
-                start_at=started,
-                location="http_client.get_json",
-            )
-            raise HttpRetryable(f"{r.status_code} em {full_url}")
-        r.raise_for_status()
-        if not r.content:
-            obs_logger.send(
-                identifier="API",
-                identifier_2=tag,
-                identifier_3=full_url,
-                data="resposta vazia",
-                type_="success",
-                status_code=str(r.status_code),
-                start_at=started,
-                location="http_client.get_json",
-            )
-            return None
+        r = client().get(url, params=params)
+    except httpx.TransportError as e:
+        log.warning("transporte falhou %s: %s", full_url, e)
+        raise
+    if r.status_code == 404:
         obs_logger.send(
             identifier="API",
             identifier_2=tag,
             identifier_3=full_url,
-            data="ok",
+            data="404 not found",
+            type_="warning",
+            status_code="404",
+            start_at=started,
+            location="http_client.get_json",
+        )
+        return None
+    if r.status_code in (429, 500, 502, 503, 504):
+        log.warning("retryavel %s -> %s", full_url, r.status_code)
+        raise HttpRetryable(r.status_code)
+    r.raise_for_status()
+    if not r.content:
+        obs_logger.send(
+            identifier="API",
+            identifier_2=tag,
+            identifier_3=full_url,
+            data="resposta vazia",
             type_="success",
             status_code=str(r.status_code),
             start_at=started,
             location="http_client.get_json",
         )
-        return r.json()
-    except HttpRetryable:
-        raise
+        return None
+    obs_logger.send(
+        identifier="API",
+        identifier_2=tag,
+        identifier_3=full_url,
+        data="ok",
+        type_="success",
+        status_code=str(r.status_code),
+        start_at=started,
+        location="http_client.get_json",
+    )
+    return r.json()
+
+
+def get_json(url: str, params: dict | None = None):
+    """GET com retries. Retorna None em 404, raise em demais erros.
+
+    Log de erro em observabilidade so e enviado apos tenacity esgotar as
+    tentativas - tentativas intermediarias que falham e depois se recuperam
+    nao poluem o canal de logs."""
+    started = _now()
+    full_url = str(httpx.URL(url, params=params)) if params else url
+    tag = _api_tag(url)
+    try:
+        return _get_json_attempt(url, params, full_url, tag, started)
     except Exception as e:
+        if isinstance(e, HttpRetryable):
+            status_code = str(e.status_code)
+            data = f"retryavel HTTP {e.status_code} apos retries esgotados"
+        elif isinstance(e, httpx.TransportError):
+            status_code = None
+            data = f"transport error apos retries esgotados: {e}"
+        elif isinstance(e, httpx.HTTPStatusError):
+            status_code = str(e.response.status_code)
+            data = f"{type(e).__name__}: HTTP {e.response.status_code}"
+        else:
+            status_code = None
+            data = f"{type(e).__name__}: {e}"
         obs_logger.send(
             identifier="API",
             identifier_2=tag,
             identifier_3=full_url,
-            data=f"{type(e).__name__}: {e}",
+            data=data,
             type_="error",
+            status_code=status_code,
             start_at=started,
             location="http_client.get_json",
         )

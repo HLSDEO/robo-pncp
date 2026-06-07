@@ -131,8 +131,8 @@ def coletar_hierarquia_itens() -> dict:
 
 def _codigos_coletados() -> tuple[set[str], set[str]]:
     """Codigos de catalogo (CATMAT/CATSER) vistos nos itens coletados.
-    Fontes: pncp.edital_itens.catalogoCodigoItem (+ material_ou_servico)
-            dadosabertos.arp_itens.codigo_item (+ tipo_item)
+    Fontes: pncp_edital_itens.catalogoCodigoItem (+ material_ou_servico)
+            dadosabertos_arp_itens.codigo_item (+ tipo_item)
     """
     with cursor() as cur:
         cur.execute(
@@ -140,13 +140,13 @@ def _codigos_coletados() -> tuple[set[str], set[str]]:
             SELECT cod, ms FROM (
                 SELECT DISTINCT raw_json->>'catalogoCodigoItem' AS cod,
                        upper(left(coalesce(material_ou_servico,''),1)) AS ms
-                  FROM pncp.edital_itens
+                  FROM pncp_edital_itens
                  WHERE raw_json->>'catalogoCodigoItem' IS NOT NULL
                 UNION
                 SELECT DISTINCT codigo_item AS cod,
                        CASE WHEN tipo_item ILIKE 'mat%' THEN 'M'
                             WHEN tipo_item ILIKE 'ser%' THEN 'S' END AS ms
-                  FROM dadosabertos.arp_itens
+                  FROM dadosabertos_arp_itens
                  WHERE codigo_item IS NOT NULL
             ) t
             WHERE cod IS NOT NULL AND cod <> ''
@@ -173,7 +173,7 @@ def _lookup_material(codigo: str) -> int:
 def _upsert_material_chain(i: dict) -> None:
     g = i.get("codigoGrupo")
     if g is not None:
-        upsert("dadosabertos.material_grupo", ["codigo_grupo"], {
+        upsert("dadosabertos_material_grupo", ["codigo_grupo"], {
             "codigo_grupo": _s(g),
             "nome_grupo": i.get("nomeGrupo"),
             "status_grupo": None,
@@ -184,7 +184,7 @@ def _upsert_material_chain(i: dict) -> None:
         })
     c = i.get("codigoClasse")
     if c is not None:
-        upsert("dadosabertos.material_classe", ["codigo_classe"], {
+        upsert("dadosabertos_material_classe", ["codigo_classe"], {
             "codigo_classe": _s(c),
             "codigo_grupo": _s(g),
             "nome_grupo": i.get("nomeGrupo"),
@@ -198,7 +198,7 @@ def _upsert_material_chain(i: dict) -> None:
         })
     p = i.get("codigoPdm")
     if p is not None:
-        upsert("dadosabertos.material_pdm", ["codigo_pdm"], {
+        upsert("dadosabertos_material_pdm", ["codigo_pdm"], {
             "codigo_pdm": _s(p),
             "codigo_classe": _s(c),
             "nome_classe": i.get("nomeClasse"),
@@ -214,7 +214,7 @@ def _upsert_material_chain(i: dict) -> None:
         })
     cod = i.get("codigoItem")
     if cod is not None:
-        upsert("dadosabertos.material_item", ["codigo_item"], {
+        upsert("dadosabertos_material_item", ["codigo_item"], {
             "codigo_item": _s(cod),
             "codigo_pdm": _s(p),
             "nome_pdm": i.get("nomePdm"),
@@ -244,7 +244,7 @@ def _lookup_servico(codigo: str) -> int:
 def _upsert_servico_chain(i: dict) -> None:
     secao = i.get("codigoSecao")
     if secao is not None:
-        upsert("dadosabertos.servico_secao", ["codigo_secao"], {
+        upsert("dadosabertos_servico_secao", ["codigo_secao"], {
             "codigo_secao": _s(secao),
             "nome_secao": i.get("nomeSecao"),
             "status_secao": None,
@@ -255,7 +255,7 @@ def _upsert_servico_chain(i: dict) -> None:
         })
     div = i.get("codigoDivisao")
     if div is not None:
-        upsert("dadosabertos.servico_divisao", ["codigo_divisao"], {
+        upsert("dadosabertos_servico_divisao", ["codigo_divisao"], {
             "codigo_divisao": _s(div),
             "codigo_secao": _s(secao),
             "nome_secao": i.get("nomeSecao"),
@@ -269,7 +269,7 @@ def _upsert_servico_chain(i: dict) -> None:
         })
     g = i.get("codigoGrupo")
     if g is not None:
-        upsert("dadosabertos.servico_grupo", ["codigo_grupo"], {
+        upsert("dadosabertos_servico_grupo", ["codigo_grupo"], {
             "codigo_grupo": _s(g),
             "codigo_divisao": _s(div),
             "nome_divisao": i.get("nomeDivisao"),
@@ -284,7 +284,7 @@ def _upsert_servico_chain(i: dict) -> None:
         })
     c = i.get("codigoClasse")
     if c is not None:
-        upsert("dadosabertos.servico_classe", ["codigo_classe"], {
+        upsert("dadosabertos_servico_classe", ["codigo_classe"], {
             "codigo_classe": _s(c),
             "codigo_grupo": _s(g),
             "nome_grupo": i.get("nomeGrupo"),
@@ -298,7 +298,7 @@ def _upsert_servico_chain(i: dict) -> None:
         })
     sub = i.get("codigoSubclasse")
     if sub is not None:
-        upsert("dadosabertos.servico_subclasse", ["codigo_subclasse"], {
+        upsert("dadosabertos_servico_subclasse", ["codigo_subclasse"], {
             "codigo_subclasse": _s(sub),
             "codigo_classe": _s(c),
             "nome_classe": i.get("nomeClasse"),
@@ -312,7 +312,7 @@ def _upsert_servico_chain(i: dict) -> None:
         })
     cod = i.get("codigoServico")
     if cod is not None:
-        upsert("dadosabertos.servico_item", ["codigo_servico"], {
+        upsert("dadosabertos_servico_item", ["codigo_servico"], {
             "codigo_servico": _s(cod),
             "codigo_subclasse": _s(sub),
             "nome_subclasse": i.get("nomeSubclasse"),
@@ -379,7 +379,7 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
         ug = _s(a.get("codigoUnidadeGerenciadora")) or unidade
         if not num:
             continue
-        upsert("dadosabertos.arp", ["numero_ata", "unidade_gerenciadora"], {
+        upsert("dadosabertos_arp", ["numero_ata", "unidade_gerenciadora"], {
             "numero_ata": num,
             "unidade_gerenciadora": ug,
             "nome_unidade_gerenciadora": a.get("nomeUnidadeGerenciadora"),
@@ -411,7 +411,7 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
         if not num or numero_item is None:
             continue
         upsert(
-            "dadosabertos.arp_itens",
+            "dadosabertos_arp_itens",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "ni_fornecedor"],
             {
                 "numero_ata": num,
@@ -440,14 +440,14 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
 
 def _listar_atas() -> list[tuple[str, str]]:
     with cursor() as cur:
-        cur.execute("SELECT numero_ata, unidade_gerenciadora FROM dadosabertos.arp")
+        cur.execute("SELECT numero_ata, unidade_gerenciadora FROM dadosabertos_arp")
         return cur.fetchall()
 
 
 def _listar_ata_itens() -> list[tuple[str, str, str]]:
     with cursor() as cur:
         cur.execute(
-            "SELECT DISTINCT numero_ata, unidade_gerenciadora, numero_item FROM dadosabertos.arp_itens"
+            "SELECT DISTINCT numero_ata, unidade_gerenciadora, numero_item FROM dadosabertos_arp_itens"
         )
         return cur.fetchall()
 
@@ -461,7 +461,7 @@ def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
         if numero_item is None:
             continue
         upsert(
-            "dadosabertos.arp_item_empenho_saldo",
+            "dadosabertos_arp_item_empenho_saldo",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "unidade", "tipo"],
             {
                 "numero_ata": numero_ata,
@@ -489,7 +489,7 @@ def _coletar_unid_adesao(ata_item: tuple[str, str, str]) -> tuple[int, int]:
     tot_unid = 0
     for seq, u in enumerate(_paginar(ARP_UNIDADES, params), start=1):
         upsert(
-            "dadosabertos.arp_item_unidades",
+            "dadosabertos_arp_item_unidades",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "seq"],
             {
                 "numero_ata": numero_ata,
@@ -511,7 +511,7 @@ def _coletar_unid_adesao(ata_item: tuple[str, str, str]) -> tuple[int, int]:
     tot_ades = 0
     for seq, ad in enumerate(_paginar(ARP_ADESOES, params), start=1):
         upsert(
-            "dadosabertos.arp_item_adesoes",
+            "dadosabertos_arp_item_adesoes",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "seq"],
             {
                 "numero_ata": numero_ata,

@@ -92,7 +92,7 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> int:
                 "fonte_url": str(SEARCH_URL) + f"?q={codigo}&pagina={pagina}",
                 "raw_json": it,
             }
-            upsert("pncp.editais", ["numero_controle_pncp"], row)
+            upsert("pncp_editais", ["numero_controle_pncp"], row)
             total_unidade += 1
             obs_logger.send(
                 identifier="EDITAL",
@@ -181,7 +181,7 @@ def _coletar_itens_um_edital(edital: tuple[str, str, str, str]) -> int:
             "raw_json": it,
         }
         upsert(
-            "pncp.edital_itens",
+            "pncp_edital_itens",
             ["orgao_cnpj", "ano", "numero_sequencial", "numero_item"],
             row,
         )
@@ -227,7 +227,7 @@ def _coletar_resultados_um_item(item: tuple[str, str, str, int]) -> int:
             "raw_json": r,
         }
         upsert(
-            "pncp.edital_item_resultados",
+            "pncp_edital_item_resultados",
             ["orgao_cnpj", "ano", "numero_sequencial", "numero_item", "sequencial_resultado"],
             row,
         )
@@ -282,7 +282,7 @@ def _coletar_atas_um_edital(edital: tuple[str, str, str, str]) -> int:
             "fonte_url": url,
             "raw_json": a,
         }
-        upsert("pncp.atas", ["numero_controle_pncp"], row)
+        upsert("pncp_atas", ["numero_controle_pncp"], row)
         n += 1
         obs_logger.send(
             identifier="ATA",

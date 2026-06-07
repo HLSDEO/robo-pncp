@@ -2,7 +2,7 @@
 
 Estrategia:
   1) Para cada UG da PF (UNIDADES_PF), busca contratos em /api/contrato/ug/{ug}.
-  2) Para cada contrato, tenta casar com pncp.editais por
+  2) Para cada contrato, tenta casar com pncp_editais por
      (unidade_compra, modalidade prefix, licitacao_numero='seq/ano') e grava
      o numero_controle_pncp em id_contrato_edital_pncp (NULL se nao achou).
   3) Coleta apenas 4 sub-rotas: historico, empenhos, itens, faturas.
@@ -133,16 +133,29 @@ def _coletar_uma_ug(par: tuple[str, str]) -> tuple[int, int]:
             "fonte_url": url,
             "raw_json": c,
         }
-        upsert("comprasnet.contratos", ["id"], row)
+        upsert("comprasnet_contratos", ["id"], row)
         total += 1
 
+        # CONTRATO: identifier_2 = sigla (PF) p/ agregacao no painel,
+        # identifier_3 = id do contrato
         obs_logger.send(
             identifier="CONTRATO",
-            identifier_2=str(cid),
-            identifier_3=id_edital or "sem_edital_pncp",
+            identifier_2=sigla,
+            identifier_3=str(cid),
             data=(row.get("objeto") or "")[:200],
             type_="success",
             location="comprasnet_contratos.coletar",
+        )
+
+        # MATCH_EDITAL_PNCP: identifier_2 = 'com' / 'sem' p/ agregar taxa de match
+        # identifier_3 = id_edital se achou, str(cid) caso contrario
+        obs_logger.send(
+            identifier="MATCH_EDITAL_PNCP",
+            identifier_2="com" if id_edital else "sem",
+            identifier_3=id_edital or str(cid),
+            data=id_edital or "",
+            type_="success",
+            location="comprasnet_contratos.matching",
         )
 
         total_sub += _coletar_subrotas(cid, c.get("links") or {})
@@ -175,7 +188,7 @@ def _coletar_subrotas(contrato_id: int, links: dict) -> int:
         for i, item in enumerate(registros):
             item_id = _id_item(item, i)
             upsert(
-                "comprasnet.contrato_subrota",
+                "comprasnet_contrato_subrota",
                 ["contrato_id", "subrota", "item_id"],
                 {
                     "contrato_id": contrato_id,

@@ -1,6 +1,8 @@
 -- =========================================================================
--- Schema do Robo PNCP
--- Cada tabela carrega colunas de procedência:
+-- Schema do Robo PNCP - tudo em um schema unico (public).
+-- Nome das tabelas: {origem}_{nome} (ex: pncp_editais, comprasnet_contratos).
+--
+-- Cada tabela carrega colunas de procedencia:
 --   fonte       -> identificador curto da origem (ex: 'pncp_search')
 --   fonte_url   -> URL completa de onde o registro foi obtido
 --   raw_json    -> payload bruto retornado pela API
@@ -8,20 +10,15 @@
 -- Tabelas distintas por endpoint (sem mesclar dados de fontes diferentes).
 -- =========================================================================
 
-CREATE SCHEMA IF NOT EXISTS pncp;
-CREATE SCHEMA IF NOT EXISTS comprasnet;
-CREATE SCHEMA IF NOT EXISTS dadosabertos;
-CREATE SCHEMA IF NOT EXISTS meta;
-
 -- ---------------------------------------------------------------------
 -- Metadados de coleta
 -- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS meta.unidades_pf (
+CREATE TABLE IF NOT EXISTS meta_unidades_pf (
     sigla         TEXT PRIMARY KEY,
     codigo_unidade TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS meta.execucao (
+CREATE TABLE IF NOT EXISTS meta_execucao (
     id             BIGSERIAL PRIMARY KEY,
     iniciado_em    TIMESTAMPTZ NOT NULL DEFAULT now(),
     finalizado_em  TIMESTAMPTZ,
@@ -35,7 +32,7 @@ CREATE TABLE IF NOT EXISTS meta.execucao (
 -- =========================================================================
 
 -- /api/search/?q=...&tipos_documento=edital  (site search)
-CREATE TABLE IF NOT EXISTS pncp.editais (
+CREATE TABLE IF NOT EXISTS pncp_editais (
     numero_controle_pncp     TEXT PRIMARY KEY,
     orgao_cnpj               TEXT NOT NULL,
     orgao_nome               TEXT,
@@ -64,12 +61,12 @@ CREATE TABLE IF NOT EXISTS pncp.editais (
     raw_json                 JSONB NOT NULL,
     coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_editais_unidade  ON pncp.editais (unidade_codigo);
-CREATE INDEX IF NOT EXISTS idx_editais_orgao    ON pncp.editais (orgao_cnpj);
-CREATE INDEX IF NOT EXISTS idx_editais_ano_seq  ON pncp.editais (orgao_cnpj, ano, numero_sequencial);
+CREATE INDEX IF NOT EXISTS idx_pncp_editais_unidade  ON pncp_editais (unidade_codigo);
+CREATE INDEX IF NOT EXISTS idx_pncp_editais_orgao    ON pncp_editais (orgao_cnpj);
+CREATE INDEX IF NOT EXISTS idx_pncp_editais_ano_seq  ON pncp_editais (orgao_cnpj, ano, numero_sequencial);
 
 -- /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens
-CREATE TABLE IF NOT EXISTS pncp.edital_itens (
+CREATE TABLE IF NOT EXISTS pncp_edital_itens (
     orgao_cnpj            TEXT NOT NULL,
     ano                   TEXT NOT NULL,
     numero_sequencial     TEXT NOT NULL,
@@ -93,7 +90,7 @@ CREATE TABLE IF NOT EXISTS pncp.edital_itens (
 );
 
 -- /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados
-CREATE TABLE IF NOT EXISTS pncp.edital_item_resultados (
+CREATE TABLE IF NOT EXISTS pncp_edital_item_resultados (
     orgao_cnpj            TEXT NOT NULL,
     ano                   TEXT NOT NULL,
     numero_sequencial     TEXT NOT NULL,
@@ -124,7 +121,7 @@ CREATE TABLE IF NOT EXISTS pncp.edital_item_resultados (
 );
 
 -- /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas
-CREATE TABLE IF NOT EXISTS pncp.atas (
+CREATE TABLE IF NOT EXISTS pncp_atas (
     numero_controle_pncp        TEXT PRIMARY KEY,
     numero_controle_pncp_compra TEXT,
     orgao_cnpj                  TEXT,
@@ -151,7 +148,7 @@ CREATE TABLE IF NOT EXISTS pncp.atas (
     raw_json                    JSONB NOT NULL,
     coletado_em                 TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_atas_compra ON pncp.atas (numero_controle_pncp_compra);
+CREATE INDEX IF NOT EXISTS idx_pncp_atas_compra ON pncp_atas (numero_controle_pncp_compra);
 
 -- =========================================================================
 -- Contratos.comprasnet.gov.br
@@ -159,10 +156,10 @@ CREATE INDEX IF NOT EXISTS idx_atas_compra ON pncp.atas (numero_controle_pncp_co
 -- Sub-rotas coletadas: historico, empenhos, itens, faturas.
 -- =========================================================================
 
-CREATE TABLE IF NOT EXISTS comprasnet.contratos (
+CREATE TABLE IF NOT EXISTS comprasnet_contratos (
     id                       BIGINT PRIMARY KEY,
     -- Match com PNCP por (unidade_compra, modalidade prefix, licitacao_numero=seq/ano).
-    -- NULL se o edital correspondente nao foi encontrado em pncp.editais.
+    -- NULL se o edital correspondente nao foi encontrado em pncp_editais.
     id_contrato_edital_pncp  TEXT,
     receita_despesa          TEXT,
     numero                   TEXT,
@@ -216,12 +213,12 @@ CREATE TABLE IF NOT EXISTS comprasnet.contratos (
     raw_json                 JSONB NOT NULL,
     coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_compras_contratos_ug      ON comprasnet.contratos (ug_origem_codigo);
-CREATE INDEX IF NOT EXISTS idx_compras_contratos_edital  ON comprasnet.contratos (id_contrato_edital_pncp);
-CREATE INDEX IF NOT EXISTS idx_compras_contratos_match   ON comprasnet.contratos (unidade_compra, licitacao_numero);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contratos_ug      ON comprasnet_contratos (ug_origem_codigo);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contratos_edital  ON comprasnet_contratos (id_contrato_edital_pncp);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contratos_match   ON comprasnet_contratos (unidade_compra, licitacao_numero);
 
 -- Sub-rotas: historico, empenhos, itens, faturas
-CREATE TABLE IF NOT EXISTS comprasnet.contrato_subrota (
+CREATE TABLE IF NOT EXISTS comprasnet_contrato_subrota (
     contrato_id   BIGINT NOT NULL,
     subrota       TEXT   NOT NULL,        -- 'historico','empenhos','itens','faturas'
     item_id       TEXT   NOT NULL,        -- id do item ou hash; quando a API nao da id, usamos posicao
@@ -231,7 +228,7 @@ CREATE TABLE IF NOT EXISTS comprasnet.contrato_subrota (
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (contrato_id, subrota, item_id)
 );
-CREATE INDEX IF NOT EXISTS idx_contrato_subrota_rota ON comprasnet.contrato_subrota (subrota);
+CREATE INDEX IF NOT EXISTS idx_comprasnet_contrato_subrota_rota ON comprasnet_contrato_subrota (subrota);
 
 -- =========================================================================
 -- Dados Abertos Comprasgov - dadosabertos.compras.gov.br
@@ -240,8 +237,7 @@ CREATE INDEX IF NOT EXISTS idx_contrato_subrota_rota ON comprasnet.contrato_subr
 -- =========================================================================
 
 -- ----- Hierarquia de Material: Grupo > Classe > PDM > Item -----
--- /modulo-material/1_consultarGrupoMaterial
-CREATE TABLE IF NOT EXISTS dadosabertos.material_grupo (
+CREATE TABLE IF NOT EXISTS dadosabertos_material_grupo (
     codigo_grupo  TEXT PRIMARY KEY,
     nome_grupo    TEXT,
     status_grupo  BOOLEAN,
@@ -252,8 +248,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos.material_grupo (
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- /modulo-material/2_consultarClasseMaterial
-CREATE TABLE IF NOT EXISTS dadosabertos.material_classe (
+CREATE TABLE IF NOT EXISTS dadosabertos_material_classe (
     codigo_classe TEXT PRIMARY KEY,
     codigo_grupo  TEXT,
     nome_grupo    TEXT,
@@ -265,10 +260,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.material_classe (
     raw_json      JSONB NOT NULL,
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_mat_classe_grupo ON dadosabertos.material_classe (codigo_grupo);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_classe_grupo ON dadosabertos_material_classe (codigo_grupo);
 
--- /modulo-material/3_consultarPdmMaterial
-CREATE TABLE IF NOT EXISTS dadosabertos.material_pdm (
+CREATE TABLE IF NOT EXISTS dadosabertos_material_pdm (
     codigo_pdm    TEXT PRIMARY KEY,
     codigo_classe TEXT,
     nome_classe   TEXT,
@@ -282,10 +276,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.material_pdm (
     raw_json      JSONB NOT NULL,
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_mat_pdm_classe ON dadosabertos.material_pdm (codigo_classe);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_pdm_classe ON dadosabertos_material_pdm (codigo_classe);
 
--- /modulo-material/4_consultarItemMaterial  (catalogo completo ~342k itens)
-CREATE TABLE IF NOT EXISTS dadosabertos.material_item (
+CREATE TABLE IF NOT EXISTS dadosabertos_material_item (
     codigo_item     TEXT PRIMARY KEY,
     codigo_pdm      TEXT,
     nome_pdm        TEXT,
@@ -303,12 +296,11 @@ CREATE TABLE IF NOT EXISTS dadosabertos.material_item (
     raw_json        JSONB NOT NULL,
     coletado_em     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_mat_item_pdm    ON dadosabertos.material_item (codigo_pdm);
-CREATE INDEX IF NOT EXISTS idx_mat_item_classe ON dadosabertos.material_item (codigo_classe);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_item_pdm    ON dadosabertos_material_item (codigo_pdm);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_item_classe ON dadosabertos_material_item (codigo_classe);
 
 -- ----- Hierarquia de Servico: Secao > Divisao > Grupo > Classe > SubClasse > Item -----
--- /modulo-servico/1_consultarSecaoServico
-CREATE TABLE IF NOT EXISTS dadosabertos.servico_secao (
+CREATE TABLE IF NOT EXISTS dadosabertos_servico_secao (
     codigo_secao  TEXT PRIMARY KEY,
     nome_secao    TEXT,
     status_secao  BOOLEAN,
@@ -319,8 +311,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos.servico_secao (
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- /modulo-servico/2_consultarDivisaoServico
-CREATE TABLE IF NOT EXISTS dadosabertos.servico_divisao (
+CREATE TABLE IF NOT EXISTS dadosabertos_servico_divisao (
     codigo_divisao TEXT PRIMARY KEY,
     codigo_secao   TEXT,
     nome_secao     TEXT,
@@ -332,10 +323,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.servico_divisao (
     raw_json       JSONB NOT NULL,
     coletado_em    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_svc_div_secao ON dadosabertos.servico_divisao (codigo_secao);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_divisao_secao ON dadosabertos_servico_divisao (codigo_secao);
 
--- /modulo-servico/3_consultarGrupoServico
-CREATE TABLE IF NOT EXISTS dadosabertos.servico_grupo (
+CREATE TABLE IF NOT EXISTS dadosabertos_servico_grupo (
     codigo_grupo  TEXT PRIMARY KEY,
     codigo_divisao TEXT,
     nome_divisao  TEXT,
@@ -348,10 +338,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.servico_grupo (
     raw_json      JSONB NOT NULL,
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_svc_grupo_div ON dadosabertos.servico_grupo (codigo_divisao);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_grupo_div ON dadosabertos_servico_grupo (codigo_divisao);
 
--- /modulo-servico/4_consultarClasseServico
-CREATE TABLE IF NOT EXISTS dadosabertos.servico_classe (
+CREATE TABLE IF NOT EXISTS dadosabertos_servico_classe (
     codigo_classe TEXT PRIMARY KEY,
     codigo_grupo  TEXT,
     nome_grupo    TEXT,
@@ -363,10 +352,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.servico_classe (
     raw_json      JSONB NOT NULL,
     coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_svc_classe_grupo ON dadosabertos.servico_classe (codigo_grupo);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_classe_grupo ON dadosabertos_servico_classe (codigo_grupo);
 
--- /modulo-servico/5_consultarSubClasseServico
-CREATE TABLE IF NOT EXISTS dadosabertos.servico_subclasse (
+CREATE TABLE IF NOT EXISTS dadosabertos_servico_subclasse (
     codigo_subclasse TEXT PRIMARY KEY,
     codigo_classe    TEXT,
     nome_classe      TEXT,
@@ -378,10 +366,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.servico_subclasse (
     raw_json         JSONB NOT NULL,
     coletado_em      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_svc_sub_classe ON dadosabertos.servico_subclasse (codigo_classe);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_subclasse_classe ON dadosabertos_servico_subclasse (codigo_classe);
 
--- /modulo-servico/6_consultarItemServico
-CREATE TABLE IF NOT EXISTS dadosabertos.servico_item (
+CREATE TABLE IF NOT EXISTS dadosabertos_servico_item (
     codigo_servico   TEXT PRIMARY KEY,
     codigo_subclasse TEXT,
     nome_subclasse   TEXT,
@@ -402,12 +389,11 @@ CREATE TABLE IF NOT EXISTS dadosabertos.servico_item (
     raw_json         JSONB NOT NULL,
     coletado_em      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_svc_item_classe ON dadosabertos.servico_item (codigo_classe);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_item_classe ON dadosabertos_servico_item (codigo_classe);
 
 -- ----- ARP (Ata de Registro de Precos) - modulo-arp -----
 -- Chave natural: (numero_ata, unidade_gerenciadora). Ex.: ('00014/2025','200334')
--- /modulo-arp/1_consultarARP
-CREATE TABLE IF NOT EXISTS dadosabertos.arp (
+CREATE TABLE IF NOT EXISTS dadosabertos_arp (
     numero_ata               TEXT NOT NULL,
     unidade_gerenciadora     TEXT NOT NULL,
     nome_unidade_gerenciadora TEXT,
@@ -432,8 +418,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos.arp (
     PRIMARY KEY (numero_ata, unidade_gerenciadora)
 );
 
--- /modulo-arp/2_consultarARPItem  (itens da ARP, com fornecedor)
-CREATE TABLE IF NOT EXISTS dadosabertos.arp_itens (
+CREATE TABLE IF NOT EXISTS dadosabertos_arp_itens (
     numero_ata               TEXT NOT NULL,
     unidade_gerenciadora     TEXT NOT NULL,
     numero_item              TEXT NOT NULL,
@@ -455,10 +440,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos.arp_itens (
     coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, ni_fornecedor)
 );
-CREATE INDEX IF NOT EXISTS idx_arp_itens_ata ON dadosabertos.arp_itens (numero_ata, unidade_gerenciadora);
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_arp_itens_ata ON dadosabertos_arp_itens (numero_ata, unidade_gerenciadora);
 
--- /modulo-arp/4_consultarEmpenhosSaldoItem  (empenho/saldo por item da ata)
-CREATE TABLE IF NOT EXISTS dadosabertos.arp_item_empenho_saldo (
+CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_empenho_saldo (
     numero_ata             TEXT NOT NULL,
     unidade_gerenciadora   TEXT NOT NULL,
     numero_item            TEXT NOT NULL,
@@ -475,8 +459,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos.arp_item_empenho_saldo (
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, unidade, tipo)
 );
 
--- /modulo-arp/3_consultarUnidadesItem  (unidades participantes/aderentes do item)
-CREATE TABLE IF NOT EXISTS dadosabertos.arp_item_unidades (
+CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_unidades (
     numero_ata             TEXT NOT NULL,
     unidade_gerenciadora   TEXT NOT NULL,
     numero_item            TEXT NOT NULL,
@@ -493,8 +476,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos.arp_item_unidades (
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, seq)
 );
 
--- /modulo-arp/5_consultarAdesoesItem  (adesoes do item da ata)
-CREATE TABLE IF NOT EXISTS dadosabertos.arp_item_adesoes (
+CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_adesoes (
     numero_ata             TEXT NOT NULL,
     unidade_gerenciadora   TEXT NOT NULL,
     numero_item            TEXT NOT NULL,

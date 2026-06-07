@@ -22,7 +22,7 @@ def _conninfo() -> str:
 def pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        # WORKERS + 2 = folga para meta.execucao e seed rodando em paralelo
+        # WORKERS + 2 = folga para meta_execucao e seed rodando em paralelo
         max_size = WORKERS + 2
         _pool = ConnectionPool(
             conninfo=_conninfo(),
@@ -53,7 +53,7 @@ def seed_unidades():
         for sigla, codigo in UNIDADES_PF.items():
             cur.execute(
                 """
-                INSERT INTO meta.unidades_pf (sigla, codigo_unidade)
+                INSERT INTO meta_unidades_pf (sigla, codigo_unidade)
                 VALUES (%s, %s)
                 ON CONFLICT (sigla) DO UPDATE SET codigo_unidade = EXCLUDED.codigo_unidade
                 """,
@@ -64,7 +64,7 @@ def seed_unidades():
 def iniciar_execucao() -> int:
     with cursor() as cur:
         cur.execute(
-            "INSERT INTO meta.execucao (status) VALUES ('rodando') RETURNING id"
+            "INSERT INTO meta_execucao (status) VALUES ('rodando') RETURNING id"
         )
         return cur.fetchone()[0]
 
@@ -73,7 +73,7 @@ def finalizar_execucao(exec_id: int, status: str, contadores: dict, erro: str | 
     with cursor() as cur:
         cur.execute(
             """
-            UPDATE meta.execucao
+            UPDATE meta_execucao
                SET finalizado_em = now(),
                    status = %s,
                    contadores = %s,
@@ -116,7 +116,7 @@ def listar_editais_para_drilldown() -> list[tuple[str, str, str, str]]:
         cur.execute(
             """
             SELECT orgao_cnpj, ano, numero_sequencial, numero_controle_pncp
-              FROM pncp.editais
+              FROM pncp_editais
              WHERE orgao_cnpj IS NOT NULL AND ano IS NOT NULL AND numero_sequencial IS NOT NULL
             """
         )
@@ -128,7 +128,7 @@ def listar_itens_com_resultado() -> list[tuple[str, str, str, int]]:
         cur.execute(
             """
             SELECT orgao_cnpj, ano, numero_sequencial, numero_item
-              FROM pncp.edital_itens
+              FROM pncp_edital_itens
              WHERE tem_resultado IS TRUE
             """
         )
@@ -140,7 +140,7 @@ def buscar_edital_pncp(
     modalidade: str | None,
     licitacao_numero: str | None,
 ) -> str | None:
-    """Encontra o numero_controle_pncp em pncp.editais por (unidade_codigo,
+    """Encontra o numero_controle_pncp em pncp_editais por (unidade_codigo,
     ano, numero_sequencial, modalidade_nome com prefix). Retorna None se nao
     achou ou se algum dos 3 campos esta vazio."""
     if not (unidade_compra and modalidade and licitacao_numero):
@@ -157,7 +157,7 @@ def buscar_edital_pncp(
         cur.execute(
             """
             SELECT numero_controle_pncp
-              FROM pncp.editais
+              FROM pncp_editais
              WHERE unidade_codigo = %s
                AND ano = %s
                AND numero_sequencial = %s

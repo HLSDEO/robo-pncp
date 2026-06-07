@@ -12,11 +12,26 @@ RUN_MODE = os.getenv("RUN_MODE", "loop").lower()
 LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "21600"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "50"))
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "60"))
+# Timeout so para abrir a conexao (handshake). Separado do read timeout
+# para detectar rapido um servidor recusando conexao (Connection refused).
+HTTP_CONNECT_TIMEOUT = float(os.getenv("HTTP_CONNECT_TIMEOUT", "10"))
 # contratos.comprasnet.gov.br/api/contrato/ug/{ug} pode levar ~40s -
 # usamos timeout maior so para esses endpoints.
 COMPRASNET_TIMEOUT = float(os.getenv("COMPRASNET_TIMEOUT", "180"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 WORKERS = int(os.getenv("WORKERS", "4"))
+
+# ----- Retry / resiliencia HTTP -----
+# O PNCP rate-limita em rajadas (Connection refused / Server disconnected).
+# Mais tentativas + backoff COM JITTER dessincroniza os workers e absorve
+# janelas de bloqueio temporario.
+HTTP_RETRIES = int(os.getenv("HTTP_RETRIES", "6"))
+HTTP_BACKOFF_MAX = float(os.getenv("HTTP_BACKOFF_MAX", "60"))
+# Pool de conexoes. keepalive_expiry baixo evita reusar conexao que o
+# servidor ja fechou (causa do "Server disconnected without sending a response").
+HTTP_MAX_CONNECTIONS = int(os.getenv("HTTP_MAX_CONNECTIONS", "10"))
+HTTP_MAX_KEEPALIVE = int(os.getenv("HTTP_MAX_KEEPALIVE", "5"))
+HTTP_KEEPALIVE_EXPIRY = float(os.getenv("HTTP_KEEPALIVE_EXPIRY", "5"))
 
 # ----- Dados Abertos Comprasgov -----
 # tamanhoPagina aceito pela API: 10..500

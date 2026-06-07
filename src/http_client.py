@@ -2,9 +2,22 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+    retry_if_exception_type,
+)
 
-from .config import HTTP_TIMEOUT
+from .config import (
+    HTTP_TIMEOUT,
+    HTTP_CONNECT_TIMEOUT,
+    HTTP_RETRIES,
+    HTTP_BACKOFF_MAX,
+    HTTP_MAX_CONNECTIONS,
+    HTTP_MAX_KEEPALIVE,
+    HTTP_KEEPALIVE_EXPIRY,
+)
 from . import obs_logger
 
 log = logging.getLogger(__name__)
@@ -16,7 +29,14 @@ def client() -> httpx.Client:
     global _client
     if _client is None:
         _client = httpx.Client(
-            timeout=HTTP_TIMEOUT,
+            # connect separado do read: handshake recusado falha rapido
+            timeout=httpx.Timeout(HTTP_TIMEOUT, connect=HTTP_CONNECT_TIMEOUT),
+            # keepalive_expiry baixo = nao reusa conexao que o PNCP ja fechou
+            limits=httpx.Limits(
+                max_connections=HTTP_MAX_CONNECTIONS,
+                max_keepalive_connections=HTTP_MAX_KEEPALIVE,
+                keepalive_expiry=HTTP_KEEPALIVE_EXPIRY,
+            ),
             headers={
                 "User-Agent": "robo-pncp/1.0 (+coleta de dados publicos)",
                 "Accept": "application/json",
@@ -66,8 +86,11 @@ def _now() -> datetime:
 
 
 @retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(HTTP_RETRIES),
+    # backoff exponencial COM JITTER (full jitter): cada worker espera um
+    # tempo aleatorio, evitando que os N workers retentem em sincronia e
+    # recriem a rajada que disparou o rate-limit do PNCP.
+    wait=wait_random_exponential(multiplier=1, max=HTTP_BACKOFF_MAX),
     retry=retry_if_exception_type((HttpRetryable, httpx.TransportError)),
     reraise=True,
 )

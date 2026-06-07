@@ -135,7 +135,36 @@ def listar_itens_com_resultado() -> list[tuple[str, str, str, int]]:
         return cur.fetchall()
 
 
-def listar_contratos_para_drilldown() -> list[tuple[int]]:
+def buscar_edital_pncp(
+    unidade_compra: str | None,
+    modalidade: str | None,
+    licitacao_numero: str | None,
+) -> str | None:
+    """Encontra o numero_controle_pncp em pncp.editais por (unidade_codigo,
+    ano, numero_sequencial, modalidade_nome com prefix). Retorna None se nao
+    achou ou se algum dos 3 campos esta vazio."""
+    if not (unidade_compra and modalidade and licitacao_numero):
+        return None
+    if "/" not in licitacao_numero:
+        return None
+    seq_raw, ano_raw = licitacao_numero.split("/", 1)
+    seq_raw, ano_raw = seq_raw.strip(), ano_raw.strip()
+    if not (seq_raw.isdigit() and ano_raw.isdigit()):
+        return None
+    seq = str(int(seq_raw))   # remove zeros a esquerda ("00018" -> "18")
+    ano = str(int(ano_raw))
     with cursor() as cur:
-        cur.execute("SELECT id FROM comprasnet.contratos")
-        return [r[0] for r in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT numero_controle_pncp
+              FROM pncp.editais
+             WHERE unidade_codigo = %s
+               AND ano = %s
+               AND numero_sequencial = %s
+               AND modalidade_nome ILIKE %s
+             LIMIT 1
+            """,
+            (unidade_compra, ano, seq, f"{modalidade}%"),
+        )
+        r = cur.fetchone()
+        return r[0] if r else None

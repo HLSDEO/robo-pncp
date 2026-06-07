@@ -12,6 +12,9 @@ RUN_MODE = os.getenv("RUN_MODE", "loop").lower()
 LOOP_INTERVAL_SECONDS = int(os.getenv("LOOP_INTERVAL_SECONDS", "21600"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "50"))
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "60"))
+# contratos.comprasnet.gov.br/api/contrato/ug/{ug} pode levar ~40s -
+# usamos timeout maior so para esses endpoints.
+COMPRASNET_TIMEOUT = float(os.getenv("COMPRASNET_TIMEOUT", "180"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 WORKERS = int(os.getenv("WORKERS", "4"))
 

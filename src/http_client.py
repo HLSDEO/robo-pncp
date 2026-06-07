@@ -42,13 +42,14 @@ def _api_tag(url: str) -> str:
             return "PNCP_ITENS"
         if "/atas" in url:
             return "PNCP_ATAS"
-        if "/contratos/" in url:
-            return "PNCP_CONTRATOS"
         return "PNCP_V1"
     if "contratos.comprasnet.gov.br" in url:
-        if "/contrato/ugorigem/" in url:
-            return "COMPRASNET_CONTRATOS"
-        return "COMPRASNET_SUBROTA"
+        if "/contrato/ug/" in url:
+            return "COMPRASNET_CONTRATOS_UG"
+        for sub in ("historico", "empenhos", "itens", "faturas"):
+            if url.endswith(f"/{sub}"):
+                return f"COMPRASNET_CONTRATO_{sub.upper()}"
+        return "COMPRASNET_CONTRATO"
     if "dadosabertos.compras.gov.br" in url:
         if "modulo-material" in url:
             return "DADOSABERTOS_MATERIAL"
@@ -70,14 +71,24 @@ def _now() -> datetime:
     retry=retry_if_exception_type((HttpRetryable, httpx.TransportError)),
     reraise=True,
 )
-def _get_json_attempt(url: str, params: dict | None, full_url: str, tag: str, started: datetime):
+def _get_json_attempt(
+    url: str,
+    params: dict | None,
+    full_url: str,
+    tag: str,
+    started: datetime,
+    timeout: float | None,
+):
     """Uma tentativa. Loga em observabilidade apenas eventos terminais
     (404, resposta vazia, ok). Erros retryaveis (transport / HTTP 429/5xx)
     sao apenas relevantados pra o tenacity tentar de novo - o log de 'error'
     fica por conta do wrapper get_json, que so dispara depois de esgotadas
     as tentativas."""
     try:
-        r = client().get(url, params=params)
+        if timeout is not None:
+            r = client().get(url, params=params, timeout=timeout)
+        else:
+            r = client().get(url, params=params)
     except httpx.TransportError as e:
         log.warning("transporte falhou %s: %s", full_url, e)
         raise
@@ -122,8 +133,11 @@ def _get_json_attempt(url: str, params: dict | None, full_url: str, tag: str, st
     return r.json()
 
 
-def get_json(url: str, params: dict | None = None):
+def get_json(url: str, params: dict | None = None, timeout: float | None = None):
     """GET com retries. Retorna None em 404, raise em demais erros.
+
+    `timeout` (segundos) sobrescreve o HTTP_TIMEOUT padrao para esta chamada -
+    util para endpoints lentos (ex: contratos.comprasnet leva ~40s).
 
     Log de erro em observabilidade so e enviado apos tenacity esgotar as
     tentativas - tentativas intermediarias que falham e depois se recuperam
@@ -132,7 +146,7 @@ def get_json(url: str, params: dict | None = None):
     full_url = str(httpx.URL(url, params=params)) if params else url
     tag = _api_tag(url)
     try:
-        return _get_json_attempt(url, params, full_url, tag, started)
+        return _get_json_attempt(url, params, full_url, tag, started, timeout)
     except Exception as e:
         if isinstance(e, HttpRetryable):
             status_code = str(e.status_code)

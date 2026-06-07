@@ -34,28 +34,25 @@ def rodar_uma_vez() -> dict:
     try:
         db.seed_unidades()
 
-        log.info(">>> 1/6 editais PNCP")
+        log.info(">>> 1/5 editais PNCP")
         contadores["editais"] = _etapa("editais", pncp.coletar_editais)
 
-        log.info(">>> 2/6 itens e resultados PNCP")
+        log.info(">>> 2/5 itens e resultados PNCP")
         itens, resultados = _etapa("itens_resultados", pncp.coletar_itens_e_resultados)
         contadores["edital_itens"] = itens
         contadores["edital_item_resultados"] = resultados
 
-        log.info(">>> 3/6 atas e contratos PNCP")
+        log.info(">>> 3/5 atas PNCP")
         contadores["atas"] = _etapa("atas", pncp.coletar_atas)
-        contadores["contratos_pncp"] = _etapa("contratos_pncp", pncp.coletar_contratos)
 
-        log.info(">>> 4/6 contratos comprasnet")
+        log.info(">>> 4/5 contratos comprasnet")
         c_cn, c_sub = _etapa("contratos_comprasnet", comprasnet_contratos.coletar_contratos_e_subrotas)
         contadores["contratos_comprasnet"] = c_cn
         contadores["contratos_comprasnet_subrotas"] = c_sub
 
-        log.info(">>> 5/6 ARP dados abertos")
+        log.info(">>> 5/5 ARP + hierarquia material/servico (dados abertos)")
         arp_contadores = _etapa("arp", dados_abertos.coletar_arp_e_dependentes)
         contadores.update(arp_contadores)
-
-        log.info(">>> 6/6 hierarquia material/servico (itens coletados)")
         hier_contadores = _etapa("hierarquia_itens", dados_abertos.coletar_hierarquia_itens)
         contadores.update(hier_contadores)
 

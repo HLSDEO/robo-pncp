@@ -153,105 +153,77 @@ CREATE TABLE IF NOT EXISTS pncp.atas (
 );
 CREATE INDEX IF NOT EXISTS idx_atas_compra ON pncp.atas (numero_controle_pncp_compra);
 
--- /api/pncp/v1/orgaos/{cnpj}/contratos/contratacao/{ano}/{seq}
-CREATE TABLE IF NOT EXISTS pncp.contratos (
-    numero_controle_pncp          TEXT PRIMARY KEY,
-    numero_controle_pncp_compra   TEXT,
-    ano_contrato                  INTEGER,
-    numero_contrato_empenho       TEXT,
-    sequencial_contrato           INTEGER,
-    tipo_contrato_id              INTEGER,
-    tipo_contrato_nome            TEXT,
-    orgao_cnpj                    TEXT,
-    orgao_razao_social            TEXT,
-    orgao_esfera_id               TEXT,
-    orgao_poder_id                TEXT,
-    unidade_codigo                TEXT,
-    unidade_nome                  TEXT,
-    ni_fornecedor                 TEXT,
-    tipo_pessoa                   TEXT,
-    nome_razao_social_fornecedor  TEXT,
-    codigo_pais_fornecedor        TEXT,
-    categoria_processo_id         INTEGER,
-    categoria_processo_nome       TEXT,
-    processo                      TEXT,
-    objeto_contrato               TEXT,
-    valor_inicial                 NUMERIC(20,4),
-    valor_global                  NUMERIC(20,4),
-    valor_parcela                 NUMERIC(20,4),
-    numero_parcelas               INTEGER,
-    data_assinatura               DATE,
-    data_vigencia_inicio          DATE,
-    data_vigencia_fim             DATE,
-    data_publicacao_pncp          TIMESTAMPTZ,
-    data_atualizacao              TIMESTAMPTZ,
-    data_atualizacao_global       TIMESTAMPTZ,
-    fonte                         TEXT NOT NULL,
-    fonte_url                     TEXT NOT NULL,
-    raw_json                      JSONB NOT NULL,
-    coletado_em                   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_contratos_compra ON pncp.contratos (numero_controle_pncp_compra);
-
 -- =========================================================================
 -- Contratos.comprasnet.gov.br
+-- Endpoint: /api/contrato/ug/{ug}
+-- Sub-rotas coletadas: historico, empenhos, itens, faturas.
 -- =========================================================================
 
 CREATE TABLE IF NOT EXISTS comprasnet.contratos (
-    id                    BIGINT PRIMARY KEY,
-    numero                TEXT,
-    numero_norm           TEXT,
-    receita_despesa       TEXT,
-    situacao              TEXT,
-    categoria             TEXT,
-    subcategoria          TEXT,
-    tipo                  TEXT,
-    codigo_tipo           TEXT,
-    subtipo               TEXT,
-    prorrogavel           TEXT,
-    processo              TEXT,
-    objeto                TEXT,
-    amparo_legal          TEXT,
-    informacao_complementar TEXT,
-    codigo_modalidade     TEXT,
-    modalidade            TEXT,
-    unidade_compra        TEXT,
-    licitacao_numero      TEXT,
+    id                       BIGINT PRIMARY KEY,
+    -- Match com PNCP por (unidade_compra, modalidade prefix, licitacao_numero=seq/ano).
+    -- NULL se o edital correspondente nao foi encontrado em pncp.editais.
+    id_contrato_edital_pncp  TEXT,
+    receita_despesa          TEXT,
+    numero                   TEXT,
+    codigo_tipo              TEXT,
+    tipo                     TEXT,
+    subtipo                  TEXT,
+    prorrogavel              TEXT,
+    situacao                 TEXT,
+    justificativa_inativo    TEXT,
+    categoria                TEXT,
+    subcategoria             TEXT,
+    unidades_requisitantes   TEXT,
+    processo                 TEXT,
+    objeto                   TEXT,
+    amparo_legal             TEXT,
+    informacao_complementar  TEXT,
+    codigo_modalidade        TEXT,
+    modalidade               TEXT,
+    unidade_compra           TEXT,
+    licitacao_numero         TEXT,
     sistema_origem_licitacao TEXT,
-    orgao_origem_codigo   TEXT,
-    orgao_origem_nome     TEXT,
-    ug_origem_codigo      TEXT,
-    ug_origem_nome        TEXT,
-    orgao_codigo          TEXT,
-    orgao_nome            TEXT,
-    ug_codigo             TEXT,
-    ug_nome               TEXT,
-    fornecedor_tipo       TEXT,
-    fornecedor_cnpj_cpf   TEXT,
-    fornecedor_nome       TEXT,
-    data_assinatura       DATE,
-    data_publicacao       DATE,
-    data_proposta_comercial DATE,
-    vigencia_inicio       DATE,
-    vigencia_fim          DATE,
-    valor_inicial         NUMERIC(20,4),
-    valor_global          NUMERIC(20,4),
-    valor_parcela         NUMERIC(20,4),
-    valor_acumulado       NUMERIC(20,4),
-    num_parcelas          INTEGER,
-    fonte                 TEXT NOT NULL,
-    fonte_url             TEXT NOT NULL,
-    raw_json              JSONB NOT NULL,
-    coletado_em           TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- orgao / unidade gestora de origem
+    orgao_origem_codigo      TEXT,
+    orgao_origem_nome        TEXT,
+    ug_origem_codigo         TEXT,
+    ug_origem_nome           TEXT,
+    ug_origem_nome_resumido  TEXT,
+    -- orgao / unidade gestora atual
+    orgao_codigo             TEXT,
+    orgao_nome               TEXT,
+    ug_codigo                TEXT,
+    ug_nome                  TEXT,
+    ug_nome_resumido         TEXT,
+    -- fornecedor
+    fornecedor_tipo          TEXT,
+    fornecedor_cnpj_cpf      TEXT,
+    fornecedor_nome          TEXT,
+    -- datas / valores
+    data_assinatura          DATE,
+    data_publicacao          DATE,
+    data_proposta_comercial  DATE,
+    vigencia_inicio          DATE,
+    vigencia_fim             DATE,
+    valor_inicial            NUMERIC(20,4),
+    valor_global             NUMERIC(20,4),
+    valor_parcela            NUMERIC(20,4),
+    valor_acumulado          NUMERIC(20,4),
+    num_parcelas             INTEGER,
+    fonte                    TEXT NOT NULL,
+    fonte_url                TEXT NOT NULL,
+    raw_json                 JSONB NOT NULL,
+    coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_compras_contratos_ug ON comprasnet.contratos (ug_origem_codigo);
-CREATE INDEX IF NOT EXISTS idx_compras_contratos_numero ON comprasnet.contratos (numero_norm);
+CREATE INDEX IF NOT EXISTS idx_compras_contratos_ug      ON comprasnet.contratos (ug_origem_codigo);
+CREATE INDEX IF NOT EXISTS idx_compras_contratos_edital  ON comprasnet.contratos (id_contrato_edital_pncp);
+CREATE INDEX IF NOT EXISTS idx_compras_contratos_match   ON comprasnet.contratos (unidade_compra, licitacao_numero);
 
--- Sub-rotas dos contratos (uma tabela por rota - preservando origem)
--- Cada linha guarda payload bruto da rota correspondente.
+-- Sub-rotas: historico, empenhos, itens, faturas
 CREATE TABLE IF NOT EXISTS comprasnet.contrato_subrota (
     contrato_id   BIGINT NOT NULL,
-    subrota       TEXT   NOT NULL,        -- 'historico','empenhos','cronograma','garantias','itens','prepostos','responsaveis','despesas_acessorias','faturas','ocorrencias','terceirizados','arquivos'
+    subrota       TEXT   NOT NULL,        -- 'historico','empenhos','itens','faturas'
     item_id       TEXT   NOT NULL,        -- id do item ou hash; quando a API nao da id, usamos posicao
     fonte         TEXT   NOT NULL,
     fonte_url     TEXT   NOT NULL,

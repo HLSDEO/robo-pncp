@@ -344,14 +344,23 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_itens (
     numero_item              TEXT NOT NULL,
     ni_fornecedor            TEXT NOT NULL DEFAULT '',
     codigo_item              TEXT,
+    -- nivel/tipo do codigo_item no catalogo. Em ARP o codigo e sempre o item
+    -- (CATMAT/CATSER), entao: 'item_material' ou 'item_servico'.
+    referencia_codigo_item   TEXT,
     descricao_item           TEXT,
     tipo_item                TEXT,
+    codigo_pdm               TEXT,
+    nome_pdm                 TEXT,
     quantidade_homologada    NUMERIC(20,4),
+    valor_unitario           NUMERIC(20,4),
     classificacao_fornecedor TEXT,
     nome_fornecedor          TEXT,
     numero_compra            TEXT,
     ano_compra               TEXT,
     codigo_modalidade        TEXT,
+    -- numeroControlePncpCompra -> _edital (consistente com dadosabertos_arp)
+    numero_controle_pncp_ata    TEXT,
+    numero_controle_pncp_edital TEXT,
     data_vigencia_inicial    DATE,
     data_vigencia_final      DATE,
     fonte                    TEXT NOT NULL,

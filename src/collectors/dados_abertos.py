@@ -148,6 +148,21 @@ def _ncp_from_links(link_ata: str | None, link_compra: str | None) -> tuple[str 
     return ata, edital
 
 
+def _referencia_codigo_item(tipo_item: str | None, codigo_item: str | None) -> str | None:
+    """Indica de qual nivel/tipo do catalogo o codigo_item e. Nos itens de ARP
+    o codigo e sempre o ITEM do catalogo (CATMAT p/ material, CATSER p/ servico) -
+    a API so resolve por codigoItem - entao retorna 'item_material' /
+    'item_servico' conforme o tipo_item."""
+    if not codigo_item or not tipo_item:
+        return None
+    t = tipo_item.strip().lower()
+    if t.startswith("mat"):
+        return "item_material"
+    if t.startswith("ser"):
+        return "item_servico"
+    return None
+
+
 # =====================================================================
 # Hierarquia SOB DEMANDA - so dos itens coletados (editais + ARPs)
 # =====================================================================
@@ -443,6 +458,7 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
         numero_item = _s(it.get("numeroItem"))
         if not num or numero_item is None:
             continue
+        cod_item = _s(it.get("codigoItem"))
         upsert(
             "dadosabertos_arp_itens",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "ni_fornecedor"],
@@ -451,15 +467,21 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
                 "unidade_gerenciadora": ug,
                 "numero_item": numero_item,
                 "ni_fornecedor": _s(it.get("niFornecedor")) or "",
-                "codigo_item": _s(it.get("codigoItem")),
+                "codigo_item": cod_item,
+                "referencia_codigo_item": _referencia_codigo_item(it.get("tipoItem"), cod_item),
                 "descricao_item": it.get("descricaoItem"),
                 "tipo_item": it.get("tipoItem"),
+                "codigo_pdm": _s(it.get("codigoPdm")),
+                "nome_pdm": it.get("nomePdm"),
                 "quantidade_homologada": _num(it.get("quantidadeHomologadaItem")),
+                "valor_unitario": _num(it.get("valorUnitario")),
                 "classificacao_fornecedor": _s(it.get("classificacaoFornecedor")),
                 "nome_fornecedor": it.get("nomeRazaoSocialFornecedor"),
                 "numero_compra": _s(it.get("numeroCompra")),
                 "ano_compra": _s(it.get("anoCompra")),
                 "codigo_modalidade": _s(it.get("codigoModalidadeCompra")),
+                "numero_controle_pncp_ata": _s(it.get("numeroControlePncpAta")),
+                "numero_controle_pncp_edital": _s(it.get("numeroControlePncpCompra")),
                 "data_vigencia_inicial": _d(it.get("dataVigenciaInicial")),
                 "data_vigencia_final": _d(it.get("dataVigenciaFinal")),
                 "fonte": "dadosabertos_arp_itens",

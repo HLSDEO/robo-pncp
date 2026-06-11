@@ -1,11 +1,22 @@
-"""Coletores do PNCP (pncp.gov.br)."""
+"""Coletores do PNCP (pncp.gov.br).
+
+Abordagem: 1 THREAD POR UG. Dentro de cada UG tudo roda SEQUENCIAL:
+  1) editais (paginado em /api/search/)
+  2) itens + resultados de cada edital
+  3) atas de cada edital
+
+A concorrencia fica limitada ao numero de UGs rodando em paralelo (WORKERS),
+cada uma fazendo UMA requisicao por vez. Isso e bem mais gentil com o
+rate-limit do PNCP do que espalhar threads por edital/item (que gerava
+rajadas e 'Connection refused').
+"""
 import logging
 from typing import Iterable
 
 from ..config import PNCP_BASE, PAGE_SIZE, UNIDADES_PF
 from ..http_client import get_json
-from ..db import upsert, listar_editais_para_drilldown, listar_itens_com_resultado
-from ..parallel import map_workers, sum_int
+from ..db import upsert
+from ..parallel import map_workers
 from .. import obs_logger
 
 log = logging.getLogger(__name__)
@@ -14,33 +25,66 @@ SEARCH_URL = f"{PNCP_BASE}/api/search/"
 PNCP_V1 = f"{PNCP_BASE}/api/pncp/v1"
 
 
-def _sigla_da_unidade(codigo: str) -> str | None:
-    for sigla, c in UNIDADES_PF.items():
-        if c == codigo:
-            return sigla
-    return None
-
-
 # ---------------------------------------------------------------------
-# 1) EDITAIS  - paraleliza por unidade
+# Orquestracao: 1 thread por UG, sub-etapas sequenciais
 # ---------------------------------------------------------------------
 
-def coletar_editais() -> int:
-    """Itera todas as unidades da PF em paralelo, busca editais no /api/search/ e grava."""
-    def _run(par: tuple[str, str]) -> int:
+def coletar_pncp_por_ug() -> dict:
+    """Itera as UGs da PF em paralelo (1 thread por UG). Dentro de cada UG
+    roda editais -> itens/resultados -> atas SEQUENCIALMENTE.
+    Retorna contadores agregados."""
+    def _run(par: tuple[str, str]) -> dict:
         sigla, codigo = par
-        log.info("editais [%s / %s]", sigla, codigo)
+        log.info("PNCP UG [%s / %s]", sigla, codigo)
         with obs_logger.step("UNIDADE", identifier_2=sigla, identifier_3=codigo,
-                             location="pncp.coletar_editais"):
-            return _coletar_editais_unidade(sigla, codigo)
+                             location="pncp.coletar_pncp_por_ug"):
+            return _coletar_ug_completa(sigla, codigo)
 
-    total = map_workers(_run, list(UNIDADES_PF.items()), desc="editais", reducer=sum_int)
-    log.info("editais coletados: %d", total)
+    parciais = map_workers(_run, list(UNIDADES_PF.items()), desc="pncp_ug")
+    total = {"editais": 0, "edital_itens": 0, "edital_item_resultados": 0, "atas": 0}
+    for d in parciais:
+        for k, v in d.items():
+            total[k] = total.get(k, 0) + v
+    log.info("PNCP por UG: %s", total)
     return total
 
 
-def _coletar_editais_unidade(sigla: str, codigo: str) -> int:
-    total_unidade = 0
+def _coletar_ug_completa(sigla: str, codigo: str) -> dict:
+    """Pipeline sequencial de uma UG."""
+    cont = {"editais": 0, "edital_itens": 0, "edital_item_resultados": 0, "atas": 0}
+
+    # 1) editais da UG (paginado)
+    editais = _coletar_editais_unidade(sigla, codigo)
+    cont["editais"] = len(editais)
+
+    # drilldown precisa de cnpj + ano + seq
+    drill = [(c, a, s) for (c, a, s, _ncp) in editais if c and a and s]
+
+    # 2) itens + resultados de cada edital (sequencial)
+    for cnpj, ano, seq in drill:
+        n_itens, itens_com_resultado = _coletar_itens_um_edital(cnpj, ano, seq)
+        cont["edital_itens"] += n_itens
+        for numero_item in itens_com_resultado:
+            cont["edital_item_resultados"] += _coletar_resultados_um_item(
+                cnpj, ano, seq, numero_item
+            )
+
+    # 3) atas de cada edital (sequencial)
+    for cnpj, ano, seq in drill:
+        cont["atas"] += _coletar_atas_um_edital(cnpj, ano, seq)
+
+    return cont
+
+
+# ---------------------------------------------------------------------
+# 1) EDITAIS
+# ---------------------------------------------------------------------
+
+def _coletar_editais_unidade(sigla: str, codigo: str) -> list[tuple[str, str, str, str]]:
+    """Pagina /api/search/ da UG, grava cada edital e devolve a lista de
+    chaves (orgao_cnpj, ano, numero_sequencial, numero_controle_pncp) para o
+    drilldown sequencial subsequente."""
+    editais: list[tuple[str, str, str, str]] = []
     pagina = 1
     while True:
         params = {
@@ -93,7 +137,9 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> int:
                 "raw_json": it,
             }
             upsert("pncp_editais", ["numero_controle_pncp"], row)
-            total_unidade += 1
+            editais.append(
+                (it.get("orgao_cnpj"), it.get("ano"), it.get("numero_sequencial"), ncp)
+            )
             obs_logger.send(
                 identifier="EDITAL",
                 identifier_2=sigla,
@@ -105,7 +151,7 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> int:
         if len(items) < PAGE_SIZE:
             break
         pagina += 1
-    return total_unidade
+    return editais
 
 
 # ---------------------------------------------------------------------
@@ -137,34 +183,24 @@ def _paginar_pncp_v1(url: str) -> Iterable[dict]:
 
 
 # ---------------------------------------------------------------------
-# 2) ITENS + RESULTADOS  - paraleliza por edital e por item
+# 2) ITENS + RESULTADOS
 # ---------------------------------------------------------------------
 
-def coletar_itens_e_resultados() -> tuple[int, int]:
-    editais = listar_editais_para_drilldown()
-    tot_itens = map_workers(
-        _coletar_itens_um_edital, editais, desc="itens", reducer=sum_int
-    )
-    itens_com_res = listar_itens_com_resultado()
-    tot_resultados = map_workers(
-        _coletar_resultados_um_item, itens_com_res, desc="resultados", reducer=sum_int
-    )
-    log.info("itens=%d resultados=%d", tot_itens, tot_resultados)
-    return tot_itens, tot_resultados
-
-
-def _coletar_itens_um_edital(edital: tuple[str, str, str, str]) -> int:
-    orgao_cnpj, ano, seq, _ncp = edital
+def _coletar_itens_um_edital(orgao_cnpj: str, ano: str, seq: str) -> tuple[int, list[int]]:
+    """Grava os itens do edital e devolve (qtd_itens, [numero_item com resultado]).
+    A lista de itens-com-resultado vem em memoria - dispensa reconsulta no banco."""
     base = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens"
     n = 0
+    com_resultado: list[int] = []
     for it in _paginar_pncp_v1(base):
-        if it.get("numeroItem") is None:
+        numero_item = it.get("numeroItem")
+        if numero_item is None:
             continue
         row = {
             "orgao_cnpj": orgao_cnpj,
             "ano": ano,
             "numero_sequencial": seq,
-            "numero_item": it.get("numeroItem"),
+            "numero_item": numero_item,
             "descricao": it.get("descricao"),
             "material_ou_servico": it.get("materialOuServico"),
             "material_ou_servico_nome": it.get("materialOuServicoNome"),
@@ -186,11 +222,12 @@ def _coletar_itens_um_edital(edital: tuple[str, str, str, str]) -> int:
             row,
         )
         n += 1
-    return n
+        if it.get("temResultado"):
+            com_resultado.append(numero_item)
+    return n, com_resultado
 
 
-def _coletar_resultados_um_item(item: tuple[str, str, str, int]) -> int:
-    orgao_cnpj, ano, seq, numero_item = item
+def _coletar_resultados_um_item(orgao_cnpj: str, ano: str, seq: str, numero_item: int) -> int:
     url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens/{numero_item}/resultados"
     data = get_json(url)
     if not data:
@@ -236,18 +273,10 @@ def _coletar_resultados_um_item(item: tuple[str, str, str, int]) -> int:
 
 
 # ---------------------------------------------------------------------
-# 3) ATAS  - paraleliza por edital
+# 3) ATAS
 # ---------------------------------------------------------------------
 
-def coletar_atas() -> int:
-    editais = listar_editais_para_drilldown()
-    total = map_workers(_coletar_atas_um_edital, editais, desc="atas", reducer=sum_int)
-    log.info("atas=%d", total)
-    return total
-
-
-def _coletar_atas_um_edital(edital: tuple[str, str, str, str]) -> int:
-    orgao_cnpj, ano, seq, _ncp = edital
+def _coletar_atas_um_edital(orgao_cnpj: str, ano: str, seq: str) -> int:
     url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/atas"
     n = 0
     for a in _paginar_pncp_v1(url):
@@ -293,5 +322,3 @@ def _coletar_atas_um_edital(edital: tuple[str, str, str, str]) -> int:
             location="pncp.coletar_atas",
         )
     return n
-
-

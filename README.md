@@ -16,9 +16,6 @@ procedência do dado nunca se perca. Cada endpoint vai para sua própria tabela
 | PNCP — itens do edital                 | `/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens`                                                     | `pncp.edital_itens`                          |
 | PNCP — resultados do item              | `/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados`                                      | `pncp.edital_item_resultados`                |
 | PNCP — atas do edital                  | `/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas`                                                      | `pncp.atas`                                  |
-| PNCP — contratos do edital             | `/api/pncp/v1/orgaos/{cnpj}/contratos/contratacao/{ano}/{seq}/`                                            | `pncp.contratos`                             |
-| Contratos Comprasnet — contrato base   | `contratos.comprasnet.gov.br/api/contrato/ugorigem/{UG}/numeroano/{NUMEROANO}`                            | `comprasnet.contratos`                       |
-| Contratos Comprasnet — sub-rotas       | `/api/contrato/{id}/{historico,empenhos,cronograma,garantias,itens,prepostos,responsaveis,...}`           | `comprasnet.contrato_subrota`                |
 | Dados Abertos — hierarquia material    | `/modulo-material/4_consultarItemMaterial?codigoItem={cod}` (cadeia Grupo>Classe>PDM>Item embutida) | `dadosabertos.material_grupo`, `material_classe`, `material_pdm`, `material_item` |
 | Dados Abertos — hierarquia serviço     | `/modulo-servico/6_consultarItemServico?codigoServico={cod}` (cadeia Seção>…>Item embutida) | `dadosabertos.servico_secao`, `servico_divisao`, `servico_grupo`, `servico_classe`, `servico_subclasse`, `servico_item` |
 | Dados Abertos — ARP                     | `/modulo-arp/1_consultarARP` (filtro por `codigoUnidadeGerenciadora` + janela `dataVigenciaInicial` ≤365d) | `dadosabertos.arp`                           |
@@ -49,19 +46,19 @@ SRs estaduais, DLOG, DTI, DCI, DIP, DIREN-ANP, DITEC e as DPFs descentralizadas.
 
 ## Paralelismo
 
-O coletor processa **`WORKERS` unidades/editais em paralelo** (default `4`)
+O coletor processa **`WORKERS` unidades da PF em paralelo** (default `4`)
 usando `ThreadPoolExecutor`:
 
-- `coletar_editais` — `WORKERS` unidades da PF simultaneamente.
-- `coletar_itens_e_resultados` — `WORKERS` editais (e depois itens com resultado) simultaneamente.
-- `coletar_atas` / `coletar_contratos` — `WORKERS` editais simultaneamente.
-- Comprasnet (`coletar_contratos_e_subrotas`) — `WORKERS` contratos simultaneamente.
+- `coletar_pncp_por_ug` — `WORKERS` unidades da PF em paralelo; **dentro de cada
+  UG** as sub-etapas rodam **sequencialmente**: editais → itens/resultados → atas.
+  Isso limita a concorrência a `WORKERS` requisições simultâneas (1 por UG),
+  bem mais gentil com o rate-limit do PNCP.
 - Dados Abertos ARP — `WORKERS` pares (unidade PF × janela), depois empenhos/unidades/adesões por item.
 - Hierarquia sob demanda — `WORKERS` códigos de material/serviço resolvidos em paralelo.
 
-A ordem **entre etapas** continua sequencial (editais → drill-downs → contratos →
-ARP → hierarquia) — só paralelizamos dentro de cada etapa. A hierarquia vem por
-último porque depende dos códigos de catálogo já coletados.
+A ordem **entre etapas** continua sequencial (PNCP por UG → ARP → hierarquia) —
+só paralelizamos dentro de cada etapa. A hierarquia vem por último porque depende
+dos códigos de catálogo já coletados.
 
 Thread-safety:
 - Pool de conexões PG via `psycopg_pool.ConnectionPool` (`min=1`, `max=WORKERS+2`).
@@ -73,10 +70,10 @@ Thread-safety:
 
 - Tabelas separadas por endpoint.
 - Cada linha guarda `raw_json` (`JSONB`) com o payload original.
-- `fonte` (slug curto, ex.: `pncp_v1_contratos`) e `fonte_url` (URL chamada).
+- `fonte` (slug curto, ex.: `pncp_v1_atas`) e `fonte_url` (URL chamada).
 - `UPSERT` por chave natural (`numero_controle_pncp`, IDs, etc.) → atualiza
   os dados sem perder a procedência.
-- Schemas separados: `pncp`, `comprasnet`, `dadosabertos`, `meta`.
+- Tabelas com prefixo de origem (`pncp_*`, `dadosabertos_*`, `meta_*`) num único schema `public`.
 
 ## Como rodar
 
@@ -125,11 +122,9 @@ fora, a coleta continua.
 | `UNIDADE`    | sigla PF       | código UG      | `success` / `error` | Coleta de editais por unidade |
 | `EDITAL`     | sigla PF       | nº controle PNCP | `success`         | Cada edital gravado       |
 | `ATA`        | CNPJ órgão     | nº controle PNCP | `success`         | Cada ata gravada          |
-| `CONTRATO`   | CNPJ órgão     | nº controle PNCP | `success`         | Cada contrato PNCP gravado |
 | `API`        | tag da API     | URL chamada    | `success` / `warning` / `error` | Toda chamada HTTP |
 
-Tags de API: `PNCP_SEARCH`, `PNCP_V1_ITENS`, `PNCP_V1_RESULTADOS`, `PNCP_V1_ATAS`,
-`PNCP_V1_CONTRATOS`, `COMPRASNET_CONTRATOS`, `COMPRASNET_SUBROTA`,
+Tags de API: `PNCP_EDITAIS`, `PNCP_ITENS`, `PNCP_DETALHE_ITEM`, `PNCP_ATAS`,
 `DADOSABERTOS_MATERIAL`, `DADOSABERTOS_SERVICO`, `DADOSABERTOS_ARP`.
 
 ### Dashboard
@@ -137,7 +132,7 @@ Tags de API: `PNCP_SEARCH`, `PNCP_V1_ITENS`, `PNCP_V1_RESULTADOS`, `PNCP_V1_ATAS
 O backend da observabilidade cria automaticamente o dashboard **"Robô PNCP -
 Visão Geral"** no startup (ver `app/backend/app/seed_pncp.py`). Cards:
 
-- KPIs: Execuções OK, Falhas, Editais, Contratos, Atas, Tempo médio/etapa
+- KPIs: Execuções OK, Falhas, Editais, Atas, Tempo médio/etapa
 - Duração média por etapa (bar)
 - Falhas por etapa (bar)
 - Requisições API por tag — sucesso e falha (bar)
@@ -155,21 +150,13 @@ Se `OBS_ENABLED=false`, o robô roda normalmente sem enviar nada.
 
 ```sql
 -- Quantos editais por unidade da PF
-SELECT unidade_sigla_pf, COUNT(*) FROM pncp.editais GROUP BY 1 ORDER BY 2 DESC;
+SELECT unidade_sigla_pf, COUNT(*) FROM pncp_editais GROUP BY 1 ORDER BY 2 DESC;
 
--- Contratos PNCP cruzados com a base do Comprasnet
-SELECT p.numero_controle_pncp, p.numero_contrato_empenho, p.ano_contrato,
-       c.id AS contrato_comprasnet_id, c.valor_global
-  FROM pncp.contratos p
-  LEFT JOIN comprasnet.contratos c
-    ON c.numero_norm = LPAD(REGEXP_REPLACE(p.numero_contrato_empenho, '\D', '', 'g'), 5, '0')
-                       || LPAD(p.ano_contrato::text, 4, '0');
-
--- Sub-rotas que voltaram dados
-SELECT subrota, COUNT(*) FROM comprasnet.contrato_subrota GROUP BY 1 ORDER BY 2 DESC;
+-- Itens com resultado homologado
+SELECT COUNT(*) FROM pncp_edital_item_resultados;
 
 -- Historico de execucoes
-SELECT id, iniciado_em, finalizado_em, status, contadores FROM meta.execucao ORDER BY id DESC LIMIT 10;
+SELECT id, iniciado_em, finalizado_em, status, contadores FROM meta_execucao ORDER BY id DESC LIMIT 10;
 ```
 
 ## Estrutura
@@ -189,6 +176,5 @@ SELECT id, iniciado_em, finalizado_em, status, contadores FROM meta.execucao ORD
     ├── http_client.py      # httpx + tenacity (retries, backoff)
     └── collectors/
         ├── pncp.py
-        ├── comprasnet_contratos.py
         └── dados_abertos.py
 ```

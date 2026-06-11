@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from .config import LOG_LEVEL, RUN_MODE, LOOP_INTERVAL_SECONDS
 from . import db, obs_logger
-from .collectors import pncp, comprasnet_contratos, dados_abertos
+from .collectors import pncp, dados_abertos
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -34,23 +34,11 @@ def rodar_uma_vez() -> dict:
     try:
         db.seed_unidades()
 
-        log.info(">>> 1/5 editais PNCP")
-        contadores["editais"] = _etapa("editais", pncp.coletar_editais)
+        log.info(">>> 1/2 PNCP por UG (editais -> itens/resultados -> atas, sequencial por UG)")
+        cont_pncp = _etapa("pncp_ug", pncp.coletar_pncp_por_ug)
+        contadores.update(cont_pncp)
 
-        log.info(">>> 2/5 itens e resultados PNCP")
-        itens, resultados = _etapa("itens_resultados", pncp.coletar_itens_e_resultados)
-        contadores["edital_itens"] = itens
-        contadores["edital_item_resultados"] = resultados
-
-        log.info(">>> 3/5 atas PNCP")
-        contadores["atas"] = _etapa("atas", pncp.coletar_atas)
-
-        log.info(">>> 4/5 contratos comprasnet")
-        c_cn, c_sub = _etapa("contratos_comprasnet", comprasnet_contratos.coletar_contratos_e_subrotas)
-        contadores["contratos_comprasnet"] = c_cn
-        contadores["contratos_comprasnet_subrotas"] = c_sub
-
-        log.info(">>> 5/5 ARP + hierarquia material/servico (dados abertos)")
+        log.info(">>> 2/2 ARP + hierarquia material/servico (dados abertos)")
         arp_contadores = _etapa("arp", dados_abertos.coletar_arp_e_dependentes)
         contadores.update(arp_contadores)
         hier_contadores = _etapa("hierarquia_itens", dados_abertos.coletar_hierarquia_itens)

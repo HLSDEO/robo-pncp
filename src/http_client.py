@@ -63,13 +63,6 @@ def _api_tag(url: str) -> str:
         if "/atas" in url:
             return "PNCP_ATAS"
         return "PNCP_V1"
-    if "contratos.comprasnet.gov.br" in url:
-        if "/contrato/ug/" in url:
-            return "COMPRASNET_CONTRATOS_UG"
-        for sub in ("historico", "empenhos", "itens", "faturas"):
-            if url.endswith(f"/{sub}"):
-                return f"COMPRASNET_CONTRATO_{sub.upper()}"
-        return "COMPRASNET_CONTRATO"
     if "dadosabertos.compras.gov.br" in url:
         if "modulo-material" in url:
             return "DADOSABERTOS_MATERIAL"
@@ -160,7 +153,7 @@ def get_json(url: str, params: dict | None = None, timeout: float | None = None)
     """GET com retries. Retorna None em 404, raise em demais erros.
 
     `timeout` (segundos) sobrescreve o HTTP_TIMEOUT padrao para esta chamada -
-    util para endpoints lentos (ex: contratos.comprasnet leva ~40s).
+    util para endpoints lentos.
 
     Log de erro em observabilidade so e enviado apos tenacity esgotar as
     tentativas - tentativas intermediarias que falham e depois se recuperam

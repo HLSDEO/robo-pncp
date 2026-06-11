@@ -15,9 +15,6 @@ HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "60"))
 # Timeout so para abrir a conexao (handshake). Separado do read timeout
 # para detectar rapido um servidor recusando conexao (Connection refused).
 HTTP_CONNECT_TIMEOUT = float(os.getenv("HTTP_CONNECT_TIMEOUT", "10"))
-# contratos.comprasnet.gov.br/api/contrato/ug/{ug} pode levar ~40s -
-# usamos timeout maior so para esses endpoints.
-COMPRASNET_TIMEOUT = float(os.getenv("COMPRASNET_TIMEOUT", "180"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 WORKERS = int(os.getenv("WORKERS", "4"))
 
@@ -40,7 +37,6 @@ DA_PAGE_SIZE = int(os.getenv("DA_PAGE_SIZE", "500"))
 ARP_ANO_INICIAL = int(os.getenv("ARP_ANO_INICIAL", "2023"))
 
 PNCP_BASE = "https://pncp.gov.br"
-COMPRASNET_CONTRATOS_BASE = "https://contratos.comprasnet.gov.br/api"
 DADOSABERTOS_BASE = "https://dadosabertos.compras.gov.br"
 
 # Codigos das unidades gestoras da Policia Federal (sigla -> codigo)

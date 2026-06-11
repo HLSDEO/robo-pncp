@@ -17,6 +17,8 @@ ARP (modulo-arp): chave natural (numero_ata, unidade_gerenciadora).
 import logging
 from datetime import date, timedelta
 
+import httpx
+
 from ..config import (
     DADOSABERTOS_BASE,
     DA_PAGE_SIZE,
@@ -48,13 +50,16 @@ ARP_ADESOES = f"{ARP}/5_consultarAdesoesItem"
 # Helpers
 # =====================================================================
 
-def _paginar(url: str, extra: dict | None = None):
-    """Pagina o envelope {resultado, totalPaginas, paginasRestantes}."""
+def _paginar_com_url(url: str, extra: dict | None = None):
+    """Pagina o envelope {resultado, totalPaginas, paginasRestantes} e devolve
+    (item, url_da_pagina) - a URL completa (com todos os params, incl. pagina)
+    que retornou aquele item, para gravar em fonte_url a consulta real."""
     pagina = 1
     while True:
         params = {"pagina": pagina, "tamanhoPagina": DA_PAGE_SIZE}
         if extra:
             params.update(extra)
+        page_url = str(httpx.URL(url, params=params))
         try:
             data = get_json(url, params=params)
         except Exception as e:
@@ -66,7 +71,7 @@ def _paginar(url: str, extra: dict | None = None):
         if not items:
             return
         for it in items:
-            yield it
+            yield it, page_url
         if isinstance(data, dict):
             restantes = data.get("paginasRestantes")
             total_pag = data.get("totalPaginas")
@@ -113,6 +118,36 @@ def _janelas(ano_inicial: int) -> list[tuple[str, str]]:
     return janelas
 
 
+def _ncp_from_links(link_ata: str | None, link_compra: str | None) -> tuple[str | None, str | None]:
+    """Deriva (numero_controle_pncp_ata, numero_controle_pncp_edital) a partir
+    dos links do PNCP que a ARP retorna. Formato do controle PNCP:
+        edital = {cnpj}-1-{seqCompra:06d}/{ano}
+        ata    = {edital}-{seqAta:06d}
+    Links:
+        link_ata    = .../app/atas/{cnpj}/{ano}/{seqCompra}/{seqAta}
+        link_compra = .../app/editais/{cnpj}/{ano}/{seqCompra}
+    """
+    ata = edital = None
+    if link_ata:
+        p = link_ata.rstrip("/").split("/")
+        try:
+            i = p.index("atas")
+            cnpj, ano, seq_compra, seq_ata = p[i + 1], p[i + 2], p[i + 3], p[i + 4]
+            edital = f"{cnpj}-1-{int(seq_compra):06d}/{ano}"
+            ata = f"{edital}-{int(seq_ata):06d}"
+        except (ValueError, IndexError):
+            pass
+    if edital is None and link_compra:
+        p = link_compra.rstrip("/").split("/")
+        try:
+            i = p.index("editais")
+            cnpj, ano, seq_compra = p[i + 1], p[i + 2], p[i + 3]
+            edital = f"{cnpj}-1-{int(seq_compra):06d}/{ano}"
+        except (ValueError, IndexError):
+            pass
+    return ata, edital
+
+
 # =====================================================================
 # Hierarquia SOB DEMANDA - so dos itens coletados (editais + ARPs)
 # =====================================================================
@@ -131,17 +166,17 @@ def coletar_hierarquia_itens() -> dict:
 
 def _codigos_coletados() -> tuple[set[str], set[str]]:
     """Codigos de catalogo (CATMAT/CATSER) vistos nos itens coletados.
-    Fontes: pncp_edital_itens.catalogoCodigoItem (+ material_ou_servico)
+    Fontes: pncp_edital_itens.catalogo_codigo_item (+ material_ou_servico)
             dadosabertos_arp_itens.codigo_item (+ tipo_item)
     """
     with cursor() as cur:
         cur.execute(
             """
             SELECT cod, ms FROM (
-                SELECT DISTINCT raw_json->>'catalogoCodigoItem' AS cod,
+                SELECT DISTINCT catalogo_codigo_item AS cod,
                        upper(left(coalesce(material_ou_servico,''),1)) AS ms
                   FROM pncp_edital_itens
-                 WHERE raw_json->>'catalogoCodigoItem' IS NOT NULL
+                 WHERE catalogo_codigo_item IS NOT NULL
                 UNION
                 SELECT DISTINCT codigo_item AS cod,
                        CASE WHEN tipo_item ILIKE 'mat%' THEN 'M'
@@ -164,13 +199,13 @@ def _codigos_coletados() -> tuple[set[str], set[str]]:
 
 def _lookup_material(codigo: str) -> int:
     got = 0
-    for i in _paginar(MAT_ITEM, {"codigoItem": codigo}):
-        _upsert_material_chain(i)
+    for i, page_url in _paginar_com_url(MAT_ITEM, {"codigoItem": codigo}):
+        _upsert_material_chain(i, page_url)
         got = 1
     return got
 
 
-def _upsert_material_chain(i: dict) -> None:
+def _upsert_material_chain(i: dict, fonte_url: str) -> None:
     g = i.get("codigoGrupo")
     if g is not None:
         upsert("dadosabertos_material_grupo", ["codigo_grupo"], {
@@ -179,7 +214,7 @@ def _upsert_material_chain(i: dict) -> None:
             "status_grupo": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_material_grupo",
-            "fonte_url": MAT_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoGrupo": g, "nomeGrupo": i.get("nomeGrupo")},
         })
     c = i.get("codigoClasse")
@@ -192,7 +227,7 @@ def _upsert_material_chain(i: dict) -> None:
             "status_classe": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_material_classe",
-            "fonte_url": MAT_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoClasse": c, "nomeClasse": i.get("nomeClasse"),
                          "codigoGrupo": g, "nomeGrupo": i.get("nomeGrupo")},
         })
@@ -208,7 +243,7 @@ def _upsert_material_chain(i: dict) -> None:
             "status_pdm": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_material_pdm",
-            "fonte_url": MAT_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoPdm": p, "nomePdm": i.get("nomePdm"),
                          "codigoClasse": c, "codigoGrupo": g},
         })
@@ -228,20 +263,20 @@ def _upsert_material_chain(i: dict) -> None:
             "codigo_ncm": i.get("codigo_ncm"),
             "descricao_ncm": i.get("descricao_ncm"),
             "fonte": "dadosabertos_material_item",
-            "fonte_url": MAT_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": i,
         })
 
 
 def _lookup_servico(codigo: str) -> int:
     got = 0
-    for i in _paginar(SVC_ITEM, {"codigoServico": codigo}):
-        _upsert_servico_chain(i)
+    for i, page_url in _paginar_com_url(SVC_ITEM, {"codigoServico": codigo}):
+        _upsert_servico_chain(i, page_url)
         got = 1
     return got
 
 
-def _upsert_servico_chain(i: dict) -> None:
+def _upsert_servico_chain(i: dict, fonte_url: str) -> None:
     secao = i.get("codigoSecao")
     if secao is not None:
         upsert("dadosabertos_servico_secao", ["codigo_secao"], {
@@ -250,7 +285,7 @@ def _upsert_servico_chain(i: dict) -> None:
             "status_secao": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_servico_secao",
-            "fonte_url": SVC_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoSecao": secao, "nomeSecao": i.get("nomeSecao")},
         })
     div = i.get("codigoDivisao")
@@ -263,7 +298,7 @@ def _upsert_servico_chain(i: dict) -> None:
             "status_divisao": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_servico_divisao",
-            "fonte_url": SVC_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoDivisao": div, "nomeDivisao": i.get("nomeDivisao"),
                          "codigoSecao": secao},
         })
@@ -278,7 +313,7 @@ def _upsert_servico_chain(i: dict) -> None:
             "status_grupo": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_servico_grupo",
-            "fonte_url": SVC_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoGrupo": g, "nomeGrupo": i.get("nomeGrupo"),
                          "codigoDivisao": div},
         })
@@ -292,7 +327,7 @@ def _upsert_servico_chain(i: dict) -> None:
             "status_classe": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_servico_classe",
-            "fonte_url": SVC_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoClasse": c, "nomeClasse": i.get("nomeClasse"),
                          "codigoGrupo": g},
         })
@@ -306,7 +341,7 @@ def _upsert_servico_chain(i: dict) -> None:
             "status_subclasse": None,
             "data_atualizacao": None,
             "fonte": "dadosabertos_servico_subclasse",
-            "fonte_url": SVC_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": {"codigoSubclasse": sub, "nomeSubclasse": i.get("nomeSubclasse"),
                          "codigoClasse": c},
         })
@@ -329,7 +364,7 @@ def _upsert_servico_chain(i: dict) -> None:
             "status_servico": i.get("statusServico"),
             "data_atualizacao": i.get("dataHoraAtualizacao"),
             "fonte": "dadosabertos_servico_item",
-            "fonte_url": SVC_ITEM,
+            "fonte_url": fonte_url,
             "raw_json": i,
         })
 
@@ -374,37 +409,35 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
         "dataVigenciaInicialMax": dmax,
     }
     tot_arp = 0
-    for a in _paginar(ARP_LIST, base_params):
+    for a, page_url in _paginar_com_url(ARP_LIST, base_params):
         num = a.get("numeroAtaRegistroPreco")
         ug = _s(a.get("codigoUnidadeGerenciadora")) or unidade
         if not num:
             continue
+        ncp_ata, ncp_edital = _ncp_from_links(a.get("linkAtaPNCP"), a.get("linkCompraPNCP"))
         upsert("dadosabertos_arp", ["numero_ata", "unidade_gerenciadora"], {
             "numero_ata": num,
             "unidade_gerenciadora": ug,
-            "nome_unidade_gerenciadora": a.get("nomeUnidadeGerenciadora"),
+            "numero_controle_pncp_ata": ncp_ata,
+            "numero_controle_pncp_edital": ncp_edital,
             "codigo_orgao": _s(a.get("codigoOrgao")),
             "nome_orgao": a.get("nomeOrgao"),
             "link_ata_pncp": a.get("linkAtaPNCP"),
             "link_compra_pncp": a.get("linkCompraPNCP"),
             "numero_compra": _s(a.get("numeroCompra")),
             "ano_compra": _s(a.get("anoCompra")),
-            "codigo_modalidade": _s(a.get("codigoModalidadeCompra")),
-            "nome_modalidade": a.get("nomeModalidadeCompra"),
             "data_assinatura": _d(a.get("dataAssinatura")),
             "data_vigencia_inicial": _d(a.get("dataVigenciaInicial")),
             "data_vigencia_final": _d(a.get("dataVigenciaFinal")),
-            "valor_total": _num(a.get("valorTotal")),
             "status_ata": a.get("statusAta"),
             "objeto": a.get("objeto"),
             "fonte": "dadosabertos_arp",
-            "fonte_url": ARP_LIST,
-            "raw_json": a,
+            "fonte_url": page_url,
         })
         tot_arp += 1
 
     tot_itens = 0
-    for it in _paginar(ARP_ITENS, base_params):
+    for it, page_url in _paginar_com_url(ARP_ITENS, base_params):
         num = it.get("numeroAtaRegistroPreco")
         ug = _s(it.get("codigoUnidadeGerenciadora")) or unidade
         numero_item = _s(it.get("numeroItem"))
@@ -430,7 +463,7 @@ def _coletar_arp_unidade_janela(tarefa: tuple[str, tuple[str, str]]) -> tuple[in
                 "data_vigencia_inicial": _d(it.get("dataVigenciaInicial")),
                 "data_vigencia_final": _d(it.get("dataVigenciaFinal")),
                 "fonte": "dadosabertos_arp_itens",
-                "fonte_url": ARP_ITENS,
+                "fonte_url": page_url,
                 "raw_json": it,
             },
         )
@@ -456,7 +489,7 @@ def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
     numero_ata, ug = ata
     params = {"numeroAta": numero_ata, "unidadeGerenciadora": ug}
     n = 0
-    for e in _paginar(ARP_EMPENHOS, params):
+    for e, page_url in _paginar_com_url(ARP_EMPENHOS, params):
         numero_item = _s(e.get("numeroItem"))
         if numero_item is None:
             continue
@@ -474,7 +507,7 @@ def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
                 "saldo_empenho": _num(e.get("saldoEmpenho")),
                 "data_atualizacao": e.get("dataHoraAtualizacao"),
                 "fonte": "dadosabertos_arp_empenho_saldo",
-                "fonte_url": ARP_EMPENHOS,
+                "fonte_url": page_url,
                 "raw_json": e,
             },
         )
@@ -487,7 +520,7 @@ def _coletar_unid_adesao(ata_item: tuple[str, str, str]) -> tuple[int, int]:
     params = {"numeroAta": numero_ata, "unidadeGerenciadora": ug, "numeroItem": numero_item}
 
     tot_unid = 0
-    for seq, u in enumerate(_paginar(ARP_UNIDADES, params), start=1):
+    for seq, (u, page_url) in enumerate(_paginar_com_url(ARP_UNIDADES, params), start=1):
         upsert(
             "dadosabertos_arp_item_unidades",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "seq"],
@@ -502,14 +535,14 @@ def _coletar_unid_adesao(ata_item: tuple[str, str, str]) -> tuple[int, int]:
                 "quantidade_registrada": _num(u.get("quantidadeRegistrada")),
                 "saldo_adesoes": _num(u.get("saldoAdesoes")),
                 "fonte": "dadosabertos_arp_unidades",
-                "fonte_url": ARP_UNIDADES,
+                "fonte_url": page_url,
                 "raw_json": u,
             },
         )
         tot_unid += 1
 
     tot_ades = 0
-    for seq, ad in enumerate(_paginar(ARP_ADESOES, params), start=1):
+    for seq, (ad, page_url) in enumerate(_paginar_com_url(ARP_ADESOES, params), start=1):
         upsert(
             "dadosabertos_arp_item_adesoes",
             ["numero_ata", "unidade_gerenciadora", "numero_item", "seq"],
@@ -519,7 +552,7 @@ def _coletar_unid_adesao(ata_item: tuple[str, str, str]) -> tuple[int, int]:
                 "numero_item": numero_item,
                 "seq": seq,
                 "fonte": "dadosabertos_arp_adesoes",
-                "fonte_url": ARP_ADESOES,
+                "fonte_url": page_url,
                 "raw_json": ad,
             },
         )

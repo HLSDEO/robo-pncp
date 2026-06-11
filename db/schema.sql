@@ -3,10 +3,11 @@
 -- Nome das tabelas: {origem}_{nome} (ex: pncp_editais, dadosabertos_arp).
 --
 -- Cada tabela carrega colunas de procedencia:
---   fonte       -> identificador curto da origem (ex: 'pncp_search')
---   fonte_url   -> URL completa de onde o registro foi obtido
---   raw_json    -> payload bruto retornado pela API
---   coletado_em -> timestamp da coleta
+--   fonte         -> identificador curto da origem (ex: 'pncp_search')
+--   fonte_url     -> URL completa de onde o registro foi obtido
+--   raw_json      -> payload bruto retornado pela API (so onde mantido)
+--   coletado_em   -> timestamp do primeiro INSERT
+--   atualizado_em -> timestamp do ultimo UPDATE (NULL ate o primeiro update)
 -- Tabelas distintas por endpoint (sem mesclar dados de fontes diferentes).
 -- =========================================================================
 
@@ -35,9 +36,7 @@ CREATE TABLE IF NOT EXISTS meta_execucao (
 CREATE TABLE IF NOT EXISTS pncp_editais (
     numero_controle_pncp     TEXT PRIMARY KEY,
     orgao_cnpj               TEXT NOT NULL,
-    orgao_nome               TEXT,
     unidade_codigo           TEXT,
-    unidade_nome             TEXT,
     unidade_sigla_pf         TEXT,
     ano                      TEXT,
     numero_sequencial        TEXT,
@@ -55,11 +54,10 @@ CREATE TABLE IF NOT EXISTS pncp_editais (
     data_atualizacao_pncp    TIMESTAMPTZ,
     data_inicio_vigencia     TIMESTAMPTZ,
     data_fim_vigencia        TIMESTAMPTZ,
-    created_at_api           TIMESTAMPTZ,
     fonte                    TEXT NOT NULL,
     fonte_url                TEXT NOT NULL,
-    raw_json                 JSONB NOT NULL,
-    coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em            TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_pncp_editais_unidade  ON pncp_editais (unidade_codigo);
 CREATE INDEX IF NOT EXISTS idx_pncp_editais_orgao    ON pncp_editais (orgao_cnpj);
@@ -73,21 +71,21 @@ CREATE TABLE IF NOT EXISTS pncp_edital_itens (
     numero_item           INTEGER NOT NULL,
     descricao             TEXT,
     material_ou_servico   TEXT,
-    material_ou_servico_nome TEXT,
+    catalogo_codigo_item  TEXT,         -- CATMAT/CATSER (usado p/ resolver hierarquia)
     valor_unitario_estimado NUMERIC(20,4),
     quantidade            NUMERIC(20,4),
     unidade_medida        TEXT,
     situacao_id           INTEGER,
     situacao_nome         TEXT,
-    tem_resultado         BOOLEAN,
     data_inclusao         TIMESTAMPTZ,
     data_atualizacao      TIMESTAMPTZ,
     fonte                 TEXT NOT NULL,
     fonte_url             TEXT NOT NULL,
-    raw_json              JSONB NOT NULL,
     coletado_em           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em         TIMESTAMPTZ,
     PRIMARY KEY (orgao_cnpj, ano, numero_sequencial, numero_item)
 );
+CREATE INDEX IF NOT EXISTS idx_pncp_edital_itens_catalogo ON pncp_edital_itens (catalogo_codigo_item);
 
 -- /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/{n}/resultados
 CREATE TABLE IF NOT EXISTS pncp_edital_item_resultados (
@@ -100,13 +98,8 @@ CREATE TABLE IF NOT EXISTS pncp_edital_item_resultados (
     tipo_pessoa           TEXT,
     nome_razao_social     TEXT,
     codigo_pais           TEXT,
-    porte_fornecedor_id   INTEGER,
-    porte_fornecedor_nome TEXT,
-    natureza_juridica_id  TEXT,
-    natureza_juridica_nome TEXT,
     quantidade_homologada NUMERIC(20,4),
     valor_unitario_homologado NUMERIC(20,4),
-    ordem_classificacao_srp INTEGER,
     data_resultado        DATE,
     situacao_id           INTEGER,
     situacao_nome         TEXT,
@@ -115,19 +108,19 @@ CREATE TABLE IF NOT EXISTS pncp_edital_item_resultados (
     data_atualizacao      TIMESTAMPTZ,
     fonte                 TEXT NOT NULL,
     fonte_url             TEXT NOT NULL,
-    raw_json              JSONB NOT NULL,
     coletado_em           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em         TIMESTAMPTZ,
     PRIMARY KEY (orgao_cnpj, ano, numero_sequencial, numero_item, sequencial_resultado)
 );
 
 -- /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/atas
+-- numero_controle_pncp_ata   -> nº de controle da propria ata (ex: ...-000003/2024-000001)
+-- numero_controle_pncp_edital -> derivado da ata, sem o sufixo (...-000003/2024)
 CREATE TABLE IF NOT EXISTS pncp_atas (
-    numero_controle_pncp        TEXT PRIMARY KEY,
-    numero_controle_pncp_compra TEXT,
+    numero_controle_pncp_ata    TEXT PRIMARY KEY,
+    numero_controle_pncp_edital TEXT,
     orgao_cnpj                  TEXT,
-    orgao_razao_social          TEXT,
     unidade_codigo              TEXT,
-    unidade_nome                TEXT,
     numero_ata                  TEXT,
     ano_ata                     INTEGER,
     sequencial_ata              INTEGER,
@@ -135,20 +128,18 @@ CREATE TABLE IF NOT EXISTS pncp_atas (
     data_vigencia_inicio        DATE,
     data_vigencia_fim           DATE,
     data_cancelamento           DATE,
-    cancelado                   BOOLEAN,
     data_publicacao_pncp        TIMESTAMPTZ,
     data_inclusao               TIMESTAMPTZ,
     data_atualizacao            TIMESTAMPTZ,
-    data_atualizacao_global     TIMESTAMPTZ,
     modalidade_nome             TEXT,
     objeto_compra               TEXT,
     informacao_complementar     TEXT,
     fonte                       TEXT NOT NULL,
     fonte_url                   TEXT NOT NULL,
-    raw_json                    JSONB NOT NULL,
-    coletado_em                 TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em               TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_pncp_atas_compra ON pncp_atas (numero_controle_pncp_compra);
+CREATE INDEX IF NOT EXISTS idx_pncp_atas_edital ON pncp_atas (numero_controle_pncp_edital);
 
 -- =========================================================================
 -- Dados Abertos Comprasgov - dadosabertos.compras.gov.br
@@ -165,7 +156,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_material_grupo (
     fonte         TEXT NOT NULL,
     fonte_url     TEXT NOT NULL,
     raw_json      JSONB NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS dadosabertos_material_classe (
@@ -178,7 +170,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_material_classe (
     fonte         TEXT NOT NULL,
     fonte_url     TEXT NOT NULL,
     raw_json      JSONB NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_classe_grupo ON dadosabertos_material_classe (codigo_grupo);
 
@@ -194,7 +187,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_material_pdm (
     fonte         TEXT NOT NULL,
     fonte_url     TEXT NOT NULL,
     raw_json      JSONB NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_pdm_classe ON dadosabertos_material_pdm (codigo_classe);
 
@@ -214,7 +208,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_material_item (
     fonte           TEXT NOT NULL,
     fonte_url       TEXT NOT NULL,
     raw_json        JSONB NOT NULL,
-    coletado_em     TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em   TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_item_pdm    ON dadosabertos_material_item (codigo_pdm);
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_material_item_classe ON dadosabertos_material_item (codigo_classe);
@@ -228,7 +223,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_servico_secao (
     fonte         TEXT NOT NULL,
     fonte_url     TEXT NOT NULL,
     raw_json      JSONB NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS dadosabertos_servico_divisao (
@@ -241,7 +237,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_servico_divisao (
     fonte          TEXT NOT NULL,
     fonte_url      TEXT NOT NULL,
     raw_json       JSONB NOT NULL,
-    coletado_em    TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em  TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_divisao_secao ON dadosabertos_servico_divisao (codigo_secao);
 
@@ -256,7 +253,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_servico_grupo (
     fonte         TEXT NOT NULL,
     fonte_url     TEXT NOT NULL,
     raw_json      JSONB NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_grupo_div ON dadosabertos_servico_grupo (codigo_divisao);
 
@@ -270,7 +268,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_servico_classe (
     fonte         TEXT NOT NULL,
     fonte_url     TEXT NOT NULL,
     raw_json      JSONB NOT NULL,
-    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_classe_grupo ON dadosabertos_servico_classe (codigo_grupo);
 
@@ -284,7 +283,8 @@ CREATE TABLE IF NOT EXISTS dadosabertos_servico_subclasse (
     fonte            TEXT NOT NULL,
     fonte_url        TEXT NOT NULL,
     raw_json         JSONB NOT NULL,
-    coletado_em      TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em    TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_subclasse_classe ON dadosabertos_servico_subclasse (codigo_classe);
 
@@ -307,36 +307,37 @@ CREATE TABLE IF NOT EXISTS dadosabertos_servico_item (
     fonte            TEXT NOT NULL,
     fonte_url        TEXT NOT NULL,
     raw_json         JSONB NOT NULL,
-    coletado_em      TIMESTAMPTZ NOT NULL DEFAULT now()
+    coletado_em      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em    TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_servico_item_classe ON dadosabertos_servico_item (codigo_classe);
 
 -- ----- ARP (Ata de Registro de Precos) - modulo-arp -----
 -- Chave natural: (numero_ata, unidade_gerenciadora). Ex.: ('00014/2025','200334')
 CREATE TABLE IF NOT EXISTS dadosabertos_arp (
-    numero_ata               TEXT NOT NULL,
-    unidade_gerenciadora     TEXT NOT NULL,
-    nome_unidade_gerenciadora TEXT,
+    numero_ata                  TEXT NOT NULL,
+    unidade_gerenciadora        TEXT NOT NULL,
+    -- relacao com PNCP, derivada dos links da ARP (link_ata_pncp / link_compra_pncp)
+    numero_controle_pncp_ata    TEXT,
+    numero_controle_pncp_edital TEXT,
     codigo_orgao             TEXT,
     nome_orgao               TEXT,
     link_ata_pncp            TEXT,
     link_compra_pncp         TEXT,
     numero_compra            TEXT,
     ano_compra               TEXT,
-    codigo_modalidade        TEXT,
-    nome_modalidade          TEXT,
     data_assinatura          DATE,
     data_vigencia_inicial    DATE,
     data_vigencia_final      DATE,
-    valor_total              NUMERIC(20,4),
     status_ata               TEXT,
     objeto                   TEXT,
     fonte                    TEXT NOT NULL,
     fonte_url                TEXT NOT NULL,
-    raw_json                 JSONB NOT NULL,
     coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em            TIMESTAMPTZ,
     PRIMARY KEY (numero_ata, unidade_gerenciadora)
 );
+CREATE INDEX IF NOT EXISTS idx_dadosabertos_arp_edital ON dadosabertos_arp (numero_controle_pncp_edital);
 
 CREATE TABLE IF NOT EXISTS dadosabertos_arp_itens (
     numero_ata               TEXT NOT NULL,
@@ -358,6 +359,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_itens (
     fonte_url                TEXT NOT NULL,
     raw_json                 JSONB NOT NULL,
     coletado_em              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em            TIMESTAMPTZ,
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, ni_fornecedor)
 );
 CREATE INDEX IF NOT EXISTS idx_dadosabertos_arp_itens_ata ON dadosabertos_arp_itens (numero_ata, unidade_gerenciadora);
@@ -376,6 +378,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_empenho_saldo (
     fonte_url              TEXT NOT NULL,
     raw_json               JSONB NOT NULL,
     coletado_em            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em          TIMESTAMPTZ,
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, unidade, tipo)
 );
 
@@ -393,6 +396,7 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_unidades (
     fonte_url              TEXT NOT NULL,
     raw_json               JSONB NOT NULL,
     coletado_em            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em          TIMESTAMPTZ,
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, seq)
 );
 
@@ -405,5 +409,6 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_adesoes (
     fonte_url              TEXT NOT NULL,
     raw_json               JSONB NOT NULL,
     coletado_em            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em          TIMESTAMPTZ,
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, seq)
 );

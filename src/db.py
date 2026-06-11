@@ -85,19 +85,19 @@ def finalizar_execucao(exec_id: int, status: str, contadores: dict, erro: str | 
 
 
 def upsert(table: str, pk_cols: list[str], row: dict):
-    """Upsert generico. row deve conter 'raw_json' como dict (sera convertido para Jsonb)."""
+    """Upsert generico. row deve conter 'raw_json' como dict (sera convertido para Jsonb).
+
+    coletado_em fica so no INSERT (DEFAULT now()); atualizado_em e marcado com
+    now() sempre que o caminho ON CONFLICT DO UPDATE e executado."""
     cols = list(row.keys())
     placeholders = ", ".join(["%s"] * len(cols))
     col_list = ", ".join(cols)
     updates = ", ".join(
         f"{c} = EXCLUDED.{c}" for c in cols if c not in pk_cols
     )
+    update_set = f"{updates}, atualizado_em = now()" if updates else "atualizado_em = now()"
     pk_list = ", ".join(pk_cols)
-    on_conflict = (
-        f"ON CONFLICT ({pk_list}) DO UPDATE SET {updates}"
-        if updates
-        else f"ON CONFLICT ({pk_list}) DO NOTHING"
-    )
+    on_conflict = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_set}"
     sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) {on_conflict}"
     values = []
     for c in cols:

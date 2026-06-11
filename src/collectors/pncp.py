@@ -13,6 +13,8 @@ rajadas e 'Connection refused').
 import logging
 from typing import Iterable
 
+import httpx
+
 from ..config import PNCP_BASE, PAGE_SIZE, UNIDADES_PF
 from ..http_client import get_json
 from ..db import upsert
@@ -99,6 +101,7 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> list[tuple[str, str, st
         data = get_json(SEARCH_URL, params=params)
         if not data:
             break
+        page_url = str(httpx.URL(SEARCH_URL, params=params))
         items = data.get("items") or []
         if not items:
             break
@@ -111,9 +114,7 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> list[tuple[str, str, st
             row = {
                 "numero_controle_pncp": ncp,
                 "orgao_cnpj": it.get("orgao_cnpj"),
-                "orgao_nome": it.get("orgao_nome"),
                 "unidade_codigo": it.get("unidade_codigo"),
-                "unidade_nome": it.get("unidade_nome"),
                 "unidade_sigla_pf": sigla,
                 "ano": it.get("ano"),
                 "numero_sequencial": it.get("numero_sequencial"),
@@ -131,10 +132,8 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> list[tuple[str, str, st
                 "data_atualizacao_pncp": it.get("data_atualizacao_pncp"),
                 "data_inicio_vigencia": it.get("data_inicio_vigencia"),
                 "data_fim_vigencia": it.get("data_fim_vigencia"),
-                "created_at_api": it.get("createdAt"),
                 "fonte": "pncp_search",
-                "fonte_url": str(SEARCH_URL) + f"?q={codigo}&pagina={pagina}",
-                "raw_json": it,
+                "fonte_url": page_url,
             }
             upsert("pncp_editais", ["numero_controle_pncp"], row)
             editais.append(
@@ -158,24 +157,27 @@ def _coletar_editais_unidade(sigla: str, codigo: str) -> list[tuple[str, str, st
 # Paginacao generica PNCP v1
 # ---------------------------------------------------------------------
 
-def _paginar_pncp_v1(url: str) -> Iterable[dict]:
-    """Pagina endpoints v1 que retornam {data: [...], totalPaginas, ...} OU lista direta."""
+def _paginar_pncp_v1(url: str) -> Iterable[tuple[dict, str]]:
+    """Pagina endpoints v1 que retornam {data: [...], totalPaginas, ...} OU lista direta.
+    Devolve (item, url_da_pagina) - a URL completa (com pagina/tamanhoPagina) que
+    retornou aquele item, para gravar em fonte_url."""
     pagina = 1
     while True:
         params = {"pagina": pagina, "tamanhoPagina": PAGE_SIZE}
+        page_url = str(httpx.URL(url, params=params))
         data = get_json(url, params=params)
         if data is None:
             return
         if isinstance(data, list):
             for item in data:
-                yield item
+                yield item, page_url
             if len(data) < PAGE_SIZE:
                 return
             pagina += 1
             continue
         items = data.get("data") or []
         for item in items:
-            yield item
+            yield item, page_url
         total_paginas = data.get("totalPaginas") or 1
         if pagina >= total_paginas or not items:
             return
@@ -192,7 +194,7 @@ def _coletar_itens_um_edital(orgao_cnpj: str, ano: str, seq: str) -> tuple[int, 
     base = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/itens"
     n = 0
     com_resultado: list[int] = []
-    for it in _paginar_pncp_v1(base):
+    for it, page_url in _paginar_pncp_v1(base):
         numero_item = it.get("numeroItem")
         if numero_item is None:
             continue
@@ -203,18 +205,16 @@ def _coletar_itens_um_edital(orgao_cnpj: str, ano: str, seq: str) -> tuple[int, 
             "numero_item": numero_item,
             "descricao": it.get("descricao"),
             "material_ou_servico": it.get("materialOuServico"),
-            "material_ou_servico_nome": it.get("materialOuServicoNome"),
+            "catalogo_codigo_item": it.get("catalogoCodigoItem"),
             "valor_unitario_estimado": it.get("valorUnitarioEstimado"),
             "quantidade": it.get("quantidade"),
             "unidade_medida": it.get("unidadeMedida"),
             "situacao_id": it.get("situacaoCompraItem"),
             "situacao_nome": it.get("situacaoCompraItemNome"),
-            "tem_resultado": it.get("temResultado"),
             "data_inclusao": it.get("dataInclusao"),
             "data_atualizacao": it.get("dataAtualizacao"),
             "fonte": "pncp_v1_itens",
-            "fonte_url": base,
-            "raw_json": it,
+            "fonte_url": page_url,
         }
         upsert(
             "pncp_edital_itens",
@@ -246,13 +246,8 @@ def _coletar_resultados_um_item(orgao_cnpj: str, ano: str, seq: str, numero_item
             "tipo_pessoa": r.get("tipoPessoa"),
             "nome_razao_social": r.get("nomeRazaoSocialFornecedor"),
             "codigo_pais": r.get("codigoPais"),
-            "porte_fornecedor_id": r.get("porteFornecedorId"),
-            "porte_fornecedor_nome": r.get("porteFornecedorNome"),
-            "natureza_juridica_id": r.get("naturezaJuridicaId"),
-            "natureza_juridica_nome": r.get("naturezaJuridicaNome"),
             "quantidade_homologada": r.get("quantidadeHomologada"),
             "valor_unitario_homologado": r.get("valorUnitarioHomologado"),
-            "ordem_classificacao_srp": r.get("ordemClassificacaoSrp"),
             "data_resultado": r.get("dataResultado"),
             "situacao_id": r.get("situacaoCompraItemResultadoId"),
             "situacao_nome": r.get("situacaoCompraItemResultadoNome"),
@@ -261,7 +256,6 @@ def _coletar_resultados_um_item(orgao_cnpj: str, ano: str, seq: str, numero_item
             "data_atualizacao": r.get("dataAtualizacao"),
             "fonte": "pncp_v1_resultados",
             "fonte_url": url,
-            "raw_json": r,
         }
         upsert(
             "pncp_edital_item_resultados",
@@ -276,22 +270,33 @@ def _coletar_resultados_um_item(orgao_cnpj: str, ano: str, seq: str, numero_item
 # 3) ATAS
 # ---------------------------------------------------------------------
 
+def _numero_controle_edital(ncp_ata: str | None) -> str | None:
+    """Deriva o nº de controle do edital/compra a partir do nº da ata,
+    removendo o sufixo sequencial da ata:
+      '00394494000136-1-000003/2024-000001' -> '00394494000136-1-000003/2024'
+    Retorna None se o padrao nao bater (sem '/ano-seq')."""
+    if not ncp_ata or "/" not in ncp_ata:
+        return None
+    base, sep, tail = ncp_ata.rpartition("-")
+    if sep and tail.isdigit() and "/" in base:
+        return base
+    return None
+
+
 def _coletar_atas_um_edital(orgao_cnpj: str, ano: str, seq: str) -> int:
     url = f"{PNCP_V1}/orgaos/{orgao_cnpj}/compras/{ano}/{seq}/atas"
     n = 0
-    for a in _paginar_pncp_v1(url):
+    for a, page_url in _paginar_pncp_v1(url):
         ncp = a.get("numeroControlePNCP")
         if not ncp:
             continue
         orgao = a.get("orgaoEntidade") or {}
         uni = a.get("unidadeOrgao") or {}
         row = {
-            "numero_controle_pncp": ncp,
-            "numero_controle_pncp_compra": a.get("numeroControlePNCPCompra"),
+            "numero_controle_pncp_ata": ncp,
+            "numero_controle_pncp_edital": _numero_controle_edital(ncp),
             "orgao_cnpj": orgao.get("cnpj") or orgao_cnpj,
-            "orgao_razao_social": orgao.get("razaoSocial"),
             "unidade_codigo": uni.get("codigoUnidade"),
-            "unidade_nome": uni.get("nomeUnidade"),
             "numero_ata": a.get("numeroAtaRegistroPreco"),
             "ano_ata": a.get("anoAta"),
             "sequencial_ata": a.get("sequencialAta"),
@@ -299,19 +304,16 @@ def _coletar_atas_um_edital(orgao_cnpj: str, ano: str, seq: str) -> int:
             "data_vigencia_inicio": a.get("dataVigenciaInicio"),
             "data_vigencia_fim": a.get("dataVigenciaFim"),
             "data_cancelamento": a.get("dataCancelamento"),
-            "cancelado": a.get("cancelado"),
             "data_publicacao_pncp": a.get("dataPublicacaoPncp"),
             "data_inclusao": a.get("dataInclusao"),
             "data_atualizacao": a.get("dataAtualizacao"),
-            "data_atualizacao_global": a.get("dataAtualizacaoGlobal"),
             "modalidade_nome": a.get("modalidadeNome"),
             "objeto_compra": a.get("objetoCompra"),
             "informacao_complementar": a.get("informacaoComplementarCompra"),
             "fonte": "pncp_v1_atas",
-            "fonte_url": url,
-            "raw_json": a,
+            "fonte_url": page_url,
         }
-        upsert("pncp_atas", ["numero_controle_pncp"], row)
+        upsert("pncp_atas", ["numero_controle_pncp_ata"], row)
         n += 1
         obs_logger.send(
             identifier="ATA",

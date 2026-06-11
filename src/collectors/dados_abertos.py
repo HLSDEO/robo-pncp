@@ -485,6 +485,18 @@ def _listar_ata_itens() -> list[tuple[str, str, str]]:
         return cur.fetchall()
 
 
+def _split_unidade_empenho(valor: str | None) -> tuple[str | None, str | None]:
+    """'200334 - CGAD/DLOG/PF' -> (codigo, nome). Split so no PRIMEIRO ' - '
+    porque o nome pode conter ' - ' (ex: '... PUBLICA - SENASP').
+    Sem separador: codigo None, nome = valor inteiro."""
+    if not valor:
+        return None, None
+    if " - " in valor:
+        cod, nome = valor.split(" - ", 1)
+        return (cod.strip() or None), (nome.strip() or None)
+    return None, valor.strip() or None
+
+
 def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
     numero_ata, ug = ata
     params = {"numeroAta": numero_ata, "unidadeGerenciadora": ug}
@@ -493,14 +505,16 @@ def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
         numero_item = _s(e.get("numeroItem"))
         if numero_item is None:
             continue
+        cod_unid, nome_unid = _split_unidade_empenho(_s(e.get("unidade")))
         upsert(
             "dadosabertos_arp_item_empenho_saldo",
-            ["numero_ata", "unidade_gerenciadora", "numero_item", "unidade", "tipo"],
+            ["numero_ata", "unidade_gerenciadora", "numero_item", "unidade_empenho", "tipo"],
             {
                 "numero_ata": numero_ata,
                 "unidade_gerenciadora": ug,
                 "numero_item": numero_item,
-                "unidade": _s(e.get("unidade")) or "",
+                "codigo_unidade_empenho": cod_unid,
+                "unidade_empenho": nome_unid or "",
                 "tipo": _s(e.get("tipo")) or "",
                 "quantidade_registrada": _num(e.get("quantidadeRegistrada")),
                 "quantidade_empenhada": _num(e.get("quantidadeEmpenhada")),
@@ -508,7 +522,6 @@ def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
                 "data_atualizacao": e.get("dataHoraAtualizacao"),
                 "fonte": "dadosabertos_arp_empenho_saldo",
                 "fonte_url": page_url,
-                "raw_json": e,
             },
         )
         n += 1

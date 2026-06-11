@@ -1,4 +1,7 @@
 import logging
+import re
+import threading
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -17,12 +20,63 @@ from .config import (
     HTTP_MAX_CONNECTIONS,
     HTTP_MAX_KEEPALIVE,
     HTTP_KEEPALIVE_EXPIRY,
+    DA_RATELIMIT_BUFFER,
+    DA_RATELIMIT_DEFAULT_WAIT,
+    DA_RATELIMIT_MAX_WAIT,
+    DA_RATELIMIT_MAX_PAUSES,
 )
 from . import obs_logger
 
 log = logging.getLogger(__name__)
 
 _client: httpx.Client | None = None
+
+# ---------------------------------------------------------------------
+# Gate global de rate-limit do dadosabertos.compras.gov.br
+# Ao receber 429, pausamos TODAS as requisicoes ao host pelo tempo pedido.
+# ---------------------------------------------------------------------
+_DA_HOST = "dadosabertos.compras.gov.br"
+_da_lock = threading.Lock()
+_da_paused_until = 0.0  # time.monotonic() ate quando o host esta pausado
+_RETRY_RE = re.compile(r"try again in\s+(\d+(?:\.\d+)?)\s*second", re.IGNORECASE)
+
+
+def _da_gate_wait() -> None:
+    """Bloqueia enquanto o dadosabertos estiver em cooldown de 429."""
+    while True:
+        with _da_lock:
+            restante = _da_paused_until - time.monotonic()
+        if restante <= 0:
+            return
+        time.sleep(min(restante, 1.0))
+
+
+def _da_pause(segundos: float) -> None:
+    """Estende o cooldown global do host para now()+segundos (so aumenta)."""
+    global _da_paused_until
+    with _da_lock:
+        alvo = time.monotonic() + segundos
+        if alvo > _da_paused_until:
+            _da_paused_until = alvo
+
+
+def _parse_retry_seconds(r: httpx.Response) -> float:
+    """Tempo de espera do 429: header Retry-After OU a mensagem
+    'Try again in N seconds'. Cai no default se nao achar."""
+    ra = r.headers.get("Retry-After")
+    if ra:
+        try:
+            return float(ra)
+        except ValueError:
+            pass
+    try:
+        msg = r.json().get("message", "") if r.content else ""
+    except Exception:
+        msg = r.text or ""
+    m = _RETRY_RE.search(msg or "")
+    if m:
+        return float(m.group(1))
+    return DA_RATELIMIT_DEFAULT_WAIT
 
 
 def client() -> httpx.Client:
@@ -78,6 +132,44 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _do_request(url, params, full_url, tag, timeout, is_da):
+    """Envia o GET. Se for dadosabertos e vier 429, pausa o host pelo tempo
+    pedido e re-tenta a MESMA requisicao - sem consumir o budget do tenacity
+    e sem perder a requisicao. Erros de transporte sobem para o tenacity."""
+    pausas = 0
+    while True:
+        if is_da:
+            _da_gate_wait()
+        try:
+            if timeout is not None:
+                r = client().get(url, params=params, timeout=timeout)
+            else:
+                r = client().get(url, params=params)
+        except httpx.TransportError as e:
+            log.warning("transporte falhou %s: %s", full_url, e)
+            raise
+        if is_da and r.status_code == 429:
+            espera = min(_parse_retry_seconds(r) + DA_RATELIMIT_BUFFER, DA_RATELIMIT_MAX_WAIT)
+            pausas += 1
+            log.warning("dadosabertos 429 (pausa %d) - aguardando %.1fs: %s",
+                        pausas, espera, full_url)
+            obs_logger.send(
+                identifier="API",
+                identifier_2=tag,
+                identifier_3=full_url,
+                data=f"429 rate limit: pausando host {espera:.1f}s (pausa {pausas})",
+                type_="warning",
+                status_code="429",
+                location="http_client.get_json",
+            )
+            _da_pause(espera)
+            if pausas >= DA_RATELIMIT_MAX_PAUSES:
+                log.error("dadosabertos 429 persistente apos %d pausas: %s", pausas, full_url)
+                return r
+            continue
+        return r
+
+
 @retry(
     stop=stop_after_attempt(HTTP_RETRIES),
     # backoff exponencial COM JITTER (full jitter): cada worker espera um
@@ -99,15 +191,11 @@ def _get_json_attempt(
     (404, resposta vazia, ok). Erros retryaveis (transport / HTTP 429/5xx)
     sao apenas relevantados pra o tenacity tentar de novo - o log de 'error'
     fica por conta do wrapper get_json, que so dispara depois de esgotadas
-    as tentativas."""
-    try:
-        if timeout is not None:
-            r = client().get(url, params=params, timeout=timeout)
-        else:
-            r = client().get(url, params=params)
-    except httpx.TransportError as e:
-        log.warning("transporte falhou %s: %s", full_url, e)
-        raise
+    as tentativas.
+
+    Excecao: 429 do dadosabertos NAO sobe pro tenacity - e tratado em
+    _do_request (pausa global do host + re-tentativa), pra nao perder a coleta."""
+    r = _do_request(url, params, full_url, tag, timeout, _DA_HOST in url)
     if r.status_code == 404:
         obs_logger.send(
             identifier="API",

@@ -131,7 +131,6 @@ CREATE TABLE IF NOT EXISTS pncp_atas (
     data_publicacao_pncp        TIMESTAMPTZ,
     data_inclusao               TIMESTAMPTZ,
     data_atualizacao            TIMESTAMPTZ,
-    modalidade_nome             TEXT,
     objeto_compra               TEXT,
     informacao_complementar     TEXT,
     fonte                       TEXT NOT NULL,
@@ -368,7 +367,10 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_empenho_saldo (
     numero_ata             TEXT NOT NULL,
     unidade_gerenciadora   TEXT NOT NULL,
     numero_item            TEXT NOT NULL,
-    unidade                TEXT NOT NULL DEFAULT '',
+    -- 'unidade' da API vem como '{codigo} - {nome}'; separado em duas colunas.
+    -- unidade_empenho (nome) faz parte da PK; codigo_unidade_empenho e extra.
+    codigo_unidade_empenho TEXT,
+    unidade_empenho        TEXT NOT NULL DEFAULT '',
     tipo                   TEXT NOT NULL DEFAULT '',
     quantidade_registrada  NUMERIC(20,4),
     quantidade_empenhada   NUMERIC(20,4),
@@ -376,10 +378,9 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_empenho_saldo (
     data_atualizacao       TIMESTAMPTZ,
     fonte                  TEXT NOT NULL,
     fonte_url              TEXT NOT NULL,
-    raw_json               JSONB NOT NULL,
     coletado_em            TIMESTAMPTZ NOT NULL DEFAULT now(),
     atualizado_em          TIMESTAMPTZ,
-    PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, unidade, tipo)
+    PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, unidade_empenho, tipo)
 );
 
 CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_unidades (

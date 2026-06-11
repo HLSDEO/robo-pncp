@@ -36,6 +36,14 @@ DA_PAGE_SIZE = int(os.getenv("DA_PAGE_SIZE", "500"))
 # Ano inicial para varrer ARPs (janelas de 365 dias ate hoje+1ano).
 ARP_ANO_INICIAL = int(os.getenv("ARP_ANO_INICIAL", "2023"))
 
+# Rate limit do dadosabertos.compras.gov.br: ao receber HTTP 429
+# ("Try again in N seconds"), pausamos TODAS as requisicoes ao host por N +
+# buffer e re-tentamos a mesma requisicao (sem perder nenhuma).
+DA_RATELIMIT_BUFFER = float(os.getenv("DA_RATELIMIT_BUFFER", "1"))       # folga sobre o tempo pedido
+DA_RATELIMIT_DEFAULT_WAIT = float(os.getenv("DA_RATELIMIT_DEFAULT_WAIT", "3"))  # se nao der p/ parsear
+DA_RATELIMIT_MAX_WAIT = float(os.getenv("DA_RATELIMIT_MAX_WAIT", "60"))  # teto por pausa
+DA_RATELIMIT_MAX_PAUSES = int(os.getenv("DA_RATELIMIT_MAX_PAUSES", "100"))  # teto de seguranca anti-loop
+
 PNCP_BASE = "https://pncp.gov.br"
 DADOSABERTOS_BASE = "https://dadosabertos.compras.gov.br"
 

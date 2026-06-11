@@ -307,7 +307,6 @@ def _coletar_atas_um_edital(orgao_cnpj: str, ano: str, seq: str) -> int:
             "data_publicacao_pncp": a.get("dataPublicacaoPncp"),
             "data_inclusao": a.get("dataInclusao"),
             "data_atualizacao": a.get("dataAtualizacao"),
-            "modalidade_nome": a.get("modalidadeNome"),
             "objeto_compra": a.get("objetoCompra"),
             "informacao_complementar": a.get("informacaoComplementarCompra"),
             "fonte": "pncp_v1_atas",

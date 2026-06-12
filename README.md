@@ -20,9 +20,7 @@ procedência do dado nunca se perca. Cada endpoint vai para sua própria tabela
 | Dados Abertos — hierarquia serviço     | `/modulo-servico/6_consultarItemServico?codigoServico={cod}` (cadeia Seção>…>Item embutida) | `dadosabertos.servico_secao`, `servico_divisao`, `servico_grupo`, `servico_classe`, `servico_subclasse`, `servico_item` |
 | Dados Abertos — ARP                     | `/modulo-arp/1_consultarARP` (filtro por `codigoUnidadeGerenciadora` + janela `dataVigenciaInicial` ≤365d) | `dadosabertos.arp`                           |
 | Dados Abertos — itens da ARP           | `/modulo-arp/2_consultarARPItem`                                                                          | `dadosabertos.arp_itens`                     |
-| Dados Abertos — unidades do item       | `/modulo-arp/3_consultarUnidadesItem`                                                                     | `dadosabertos.arp_item_unidades`             |
 | Dados Abertos — empenhos/saldo do item | `/modulo-arp/4_consultarEmpenhosSaldoItem`                                                                | `dadosabertos.arp_item_empenho_saldo`        |
-| Dados Abertos — adesões do item        | `/modulo-arp/5_consultarAdesoesItem`                                                                      | `dadosabertos.arp_item_adesoes`              |
 
 > Paths confirmados via `https://dadosabertos.compras.gov.br/v3/api-docs` (swagger).
 > Envelope de resposta: `{resultado:[...], totalRegistros, totalPaginas, paginasRestantes}`.

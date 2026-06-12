@@ -87,17 +87,33 @@ def finalizar_execucao(exec_id: int, status: str, contadores: dict, erro: str | 
 def upsert(table: str, pk_cols: list[str], row: dict):
     """Upsert generico. row deve conter 'raw_json' como dict (sera convertido para Jsonb).
 
-    coletado_em fica so no INSERT (DEFAULT now()); atualizado_em e marcado com
-    now() sempre que o caminho ON CONFLICT DO UPDATE e executado."""
+    coletado_em fica so no INSERT (DEFAULT now()).
+    atualizado_em e marcado com now() APENAS quando o registro ja existe E algum
+    dado realmente mudou em relacao ao que esta no banco. A comparacao usa
+    `IS DISTINCT FROM` sobre as colunas de dados (ignora fonte/fonte_url, que sao
+    procedencia e nao 'dado'). Se a API devolveu exatamente o mesmo conteudo, o
+    ON CONFLICT cai num WHERE falso -> nenhuma linha e tocada e atualizado_em
+    permanece como estava."""
     cols = list(row.keys())
     placeholders = ", ".join(["%s"] * len(cols))
     col_list = ", ".join(cols)
-    updates = ", ".join(
-        f"{c} = EXCLUDED.{c}" for c in cols if c not in pk_cols
-    )
-    update_set = f"{updates}, atualizado_em = now()" if updates else "atualizado_em = now()"
     pk_list = ", ".join(pk_cols)
-    on_conflict = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_set}"
+    non_pk = [c for c in cols if c not in pk_cols]
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in non_pk)
+    # colunas de dados comparadas p/ decidir se houve mudanca (exclui procedencia:
+    # fonte e constante; fonte_url muda so pela paginacao, nao e 'dado')
+    cmp_cols = [c for c in non_pk if c not in ("fonte", "fonte_url")]
+    if updates and cmp_cols:
+        distinct = " OR ".join(
+            f"{table}.{c} IS DISTINCT FROM EXCLUDED.{c}" for c in cmp_cols
+        )
+        on_conflict = (
+            f"ON CONFLICT ({pk_list}) DO UPDATE SET {updates}, atualizado_em = now() "
+            f"WHERE {distinct}"
+        )
+    else:
+        # so PK (+ procedencia): nada de dado pra comparar -> nunca atualiza
+        on_conflict = f"ON CONFLICT ({pk_list}) DO NOTHING"
     sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) {on_conflict}"
     values = []
     for c in cols:

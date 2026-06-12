@@ -41,9 +41,7 @@ SVC_ITEM = f"{SVC}/6_consultarItemServico"
 ARP = f"{DADOSABERTOS_BASE}/modulo-arp"
 ARP_LIST = f"{ARP}/1_consultarARP"
 ARP_ITENS = f"{ARP}/2_consultarARPItem"
-ARP_UNIDADES = f"{ARP}/3_consultarUnidadesItem"
 ARP_EMPENHOS = f"{ARP}/4_consultarEmpenhosSaldoItem"
-ARP_ADESOES = f"{ARP}/5_consultarAdesoesItem"
 
 
 # =====================================================================
@@ -398,19 +396,12 @@ def coletar_arp_e_dependentes() -> dict:
     )
 
     atas = _listar_atas()
-    ata_itens = _listar_ata_itens()
-
     tot_emp = map_workers(_coletar_empenho_saldo, atas, desc="arp_emp", reducer=sum_int)
-    tot_unid, tot_ades = map_workers(
-        _coletar_unid_adesao, ata_itens, desc="arp_det", reducer=sum_tuple(2)
-    )
 
     contadores = {
         "arp": tot_arp,
         "arp_itens": tot_itens,
         "arp_empenho_saldo": tot_emp,
-        "arp_unidades": tot_unid,
-        "arp_adesoes": tot_ades,
     }
     log.info("arp %s", contadores)
     return contadores
@@ -499,14 +490,6 @@ def _listar_atas() -> list[tuple[str, str]]:
         return cur.fetchall()
 
 
-def _listar_ata_itens() -> list[tuple[str, str, str]]:
-    with cursor() as cur:
-        cur.execute(
-            "SELECT DISTINCT numero_ata, unidade_gerenciadora, numero_item FROM dadosabertos_arp_itens"
-        )
-        return cur.fetchall()
-
-
 def _split_unidade_empenho(valor: str | None) -> tuple[str | None, str | None]:
     """'200334 - CGAD/DLOG/PF' -> (codigo, nome). Split so no PRIMEIRO ' - '
     porque o nome pode conter ' - ' (ex: '... PUBLICA - SENASP').
@@ -548,48 +531,3 @@ def _coletar_empenho_saldo(ata: tuple[str, str]) -> int:
         )
         n += 1
     return n
-
-
-def _coletar_unid_adesao(ata_item: tuple[str, str, str]) -> tuple[int, int]:
-    numero_ata, ug, numero_item = ata_item
-    params = {"numeroAta": numero_ata, "unidadeGerenciadora": ug, "numeroItem": numero_item}
-
-    tot_unid = 0
-    for seq, (u, page_url) in enumerate(_paginar_com_url(ARP_UNIDADES, params), start=1):
-        upsert(
-            "dadosabertos_arp_item_unidades",
-            ["numero_ata", "unidade_gerenciadora", "numero_item", "seq"],
-            {
-                "numero_ata": numero_ata,
-                "unidade_gerenciadora": ug,
-                "numero_item": numero_item,
-                "seq": seq,
-                "codigo_pdm": _s(u.get("codigoPdm")),
-                "descricao_item": u.get("descricaoItem"),
-                "fornecedor": u.get("fornecedor"),
-                "quantidade_registrada": _num(u.get("quantidadeRegistrada")),
-                "saldo_adesoes": _num(u.get("saldoAdesoes")),
-                "fonte": "dadosabertos_arp_unidades",
-                "fonte_url": page_url,
-                "raw_json": u,
-            },
-        )
-        tot_unid += 1
-
-    tot_ades = 0
-    for seq, (ad, page_url) in enumerate(_paginar_com_url(ARP_ADESOES, params), start=1):
-        upsert(
-            "dadosabertos_arp_item_adesoes",
-            ["numero_ata", "unidade_gerenciadora", "numero_item", "seq"],
-            {
-                "numero_ata": numero_ata,
-                "unidade_gerenciadora": ug,
-                "numero_item": numero_item,
-                "seq": seq,
-                "fonte": "dadosabertos_arp_adesoes",
-                "fonte_url": page_url,
-                "raw_json": ad,
-            },
-        )
-        tot_ades += 1
-    return tot_unid, tot_ades

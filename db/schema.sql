@@ -391,34 +391,3 @@ CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_empenho_saldo (
     atualizado_em          TIMESTAMPTZ,
     PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, unidade_empenho, tipo)
 );
-
-CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_unidades (
-    numero_ata             TEXT NOT NULL,
-    unidade_gerenciadora   TEXT NOT NULL,
-    numero_item            TEXT NOT NULL,
-    seq                    INTEGER NOT NULL,
-    codigo_pdm             TEXT,
-    descricao_item         TEXT,
-    fornecedor             TEXT,
-    quantidade_registrada  NUMERIC(20,4),
-    saldo_adesoes          NUMERIC(20,4),
-    fonte                  TEXT NOT NULL,
-    fonte_url              TEXT NOT NULL,
-    raw_json               JSONB NOT NULL,
-    coletado_em            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    atualizado_em          TIMESTAMPTZ,
-    PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, seq)
-);
-
-CREATE TABLE IF NOT EXISTS dadosabertos_arp_item_adesoes (
-    numero_ata             TEXT NOT NULL,
-    unidade_gerenciadora   TEXT NOT NULL,
-    numero_item            TEXT NOT NULL,
-    seq                    INTEGER NOT NULL,
-    fonte                  TEXT NOT NULL,
-    fonte_url              TEXT NOT NULL,
-    raw_json               JSONB NOT NULL,
-    coletado_em            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    atualizado_em          TIMESTAMPTZ,
-    PRIMARY KEY (numero_ata, unidade_gerenciadora, numero_item, seq)
-);
